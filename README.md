@@ -1,273 +1,193 @@
-# Conversation Search
+# agent-recall
 
-Find and resume past Claude Code conversations using smart hybrid extraction and JIT indexing. Get session IDs and project paths to easily jump back into previous work.
+**Search your past Claude Code, Codex, and Gemini CLI conversations.** Local SQLite + FTS5, exposed via MCP, returns ranked fragments so your next agent doesn't blow its context resuming whole sessions.
 
-## Features
+> Fork of [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — being extended from a Claude-only resume helper into a multi-CLI fragment-retrieval MCP server. See [Current state](#current-state) for what works today versus what's planned.
 
-- **Session Resumption**: Get exact commands to resume past conversations
-- **Unified CLI**: Single `cc-conversation-search` command with intuitive subcommands
-- **Calendar Date Filtering**: Intuitive `--date yesterday`, `--since`, `--until` parameters
-- **Smart Extraction**: Hybrid indexing (full user content + smart assistant extraction)
-- **JIT Indexing**: Instant indexing before search (no AI calls, no delays)
-- **Local Timezone Display**: All timestamps shown in your local time
-- **Meta-Conversation Filtering**: Automatically excludes search tool usage from results
-- **Progressive Exploration**: Simple search → broader search → manual exploration
-- **Conversation Context**: Expand context incrementally around any message
-- **Claude Code Skill**: Integrated Skill that outputs session resumption commands
-- **Multi-Project Support**: Works across all your Claude Code projects
+## Why this exists
 
-## Quick Start
+Modern coding CLIs already auto-save every session to disk:
 
-### Installation via Claude Code Plugin (Recommended)
+- **Claude Code** → `~/.claude/projects/<proj>/<session>.jsonl`
+- **Codex CLI** → `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- **Gemini CLI** → `~/.gemini/tmp/<project_hash>/chats/`
 
-Install the complete plugin (skill + CLI tool instructions) directly in Claude Code:
+That's gigabytes of high-signal text sitting on your filesystem — user prompts, assistant responses, tool calls, tool outputs, reasoning, token usage. None of the official tools let you search across them, and switching between CLIs means losing track of what you figured out where.
+
+`agent-recall` indexes all three into one local SQLite database and serves it over MCP, so any MCP-compatible client (Claude Code, Codex, Gemini CLI, Cursor) can search the union.
+
+## How it's different from "AI memory" tools
+
+There's a crowded space of MCP memory servers — Mem0, MemMachine, MemPalace, mcp-memory-keeper, [mnardit/agent-recall](https://github.com/mnardit/agent-recall) (different project, same name — see [A note on the name](#a-note-on-the-name)), and others. They share one design choice that doesn't fit this problem:
+
+> The agent must actively *save facts* via tool calls during conversations.
+
+That works for curated knowledge ("Alice is the lead engineer at Acme, prefers async") but it doesn't help you find "that session three weeks ago where I finally got the Cloudflare Modbus polling working." For that you need the raw transcript, not a summary the model decided to extract.
+
+This project takes the opposite approach:
+
+| | Knowledge-graph memory tools | agent-recall (this project) |
+|---|---|---|
+| Source of truth | What the agent saves via tools | Existing JSONL on disk |
+| Granularity | Structured entities + slots + relations | Message-level fragments |
+| Compliance-dependent | Yes — agent must call save-tools | No — passive indexing |
+| Captures history before install | No | Yes, full backfill |
+| Right question | "Who is Alice?" | "Find the session where I debugged X" |
+
+The two approaches are complementary. You can run both. This project fills the gap nobody else is filling.
+
+## Principles
+
+1. **Read, don't write.** The CLIs already auto-save. We index what's there. We never ask the agent to do extra work mid-conversation.
+2. **Fragments over sessions.** A search returns the relevant ~200 tokens with metadata, not "here's a 40k-token session — resume it." Resume is a separate, explicit tool.
+3. **Local, single file.** SQLite. No daemons by default, no cloud, no Neo4j, no Docker. Lives next to your shell history.
+4. **Pluggable adapters.** One source = one ~80-line adapter implementing a tiny interface. Adding a new CLI is a weekend, not a fork.
+5. **Schema-agnostic ingest, common schema at query time.** Each CLI's quirks get absorbed by its adapter; everything downstream sees the same `Message` shape.
+6. **MCP-native.** Any MCP-compatible client gets the same `search` / `get_context` / `list` tools. No client-specific skill code.
+7. **Fail open.** If one adapter breaks on a new CLI release, the other two keep serving. Log, don't crash.
+
+## Target architecture
+
+![Target architecture](architecture.png)
+
+### Tools the MCP server will expose
+
+- **`search(query, source?, date_range?, k=5)`** → ranked fragments: `{source, session_id, project_path, ts, role, snippet, score, message_uuid}`. The default tool — returns the relevant text, not a resume command.
+- **`get_context(session_id, message_uuid, window=10)`** → surrounding messages for a single hit, when one fragment isn't enough.
+- **`list(date_range?, source?)`** → conversation-level summaries. This is where resume hints live — explicit, opt-in, not the default.
+
+## Current state
+
+Honest snapshot of where the code is right now:
+
+- ✅ **Claude Code indexing works today.** Inherited from `cc-conversation-search`: FTS5 over `~/.claude/projects/`, JIT indexing, tree-aware schema, calendar date filtering.
+- ✅ **Claude Code skill works today.** Returns session IDs + resume commands; biased toward "find which session," not fragment retrieval.
+- 🟡 **CLI is still named `cc-conversation-search`.** Rename to `agent-recall` is part of the v1 refactor.
+- ❌ **Codex and Gemini adapters not yet built.** Source files exist on disk — the indexer just doesn't know about them yet.
+- ❌ **MCP server not yet exposed.** Today this is a Claude Code skill + Python CLI. The MCP server (callable from Codex, Gemini CLI, Cursor) is v1 scope.
+- ❌ **Fragment-first output not yet wired through the skill.** The CLI already supports it (`--content`), but the skill prompt biases toward session IDs.
+
+If you want to use it today on Claude Code only, the [Quick start](#quick-start) and [Command reference](#command-reference) below describe what works. The rest is roadmap.
+
+## Quick start
+
+> Until the refactor lands, install from source. There's no PyPI release yet.
 
 ```bash
-# Add this repo's marketplace
-/plugin marketplace add akatz-ai/cc-conversation-search
+git clone https://github.com/laurynas-pliuskys/agent-recall.git
+cd agent-recall
+pip install -e .
 
-# Install the plugin
-/plugin install conversation-search
-```
-
-Then follow the installation instructions shown by Claude to:
-1. Install the CLI tool: `uv tool install cc-conversation-search`
-2. Initialize the database: `cc-conversation-search init`
-
-### Manual Installation
-
-#### 1. Install CLI Tool
-
-```bash
-# Using uv (recommended)
-uv tool install cc-conversation-search
-
-# Or using pip
-pip install cc-conversation-search
-```
-
-#### 2. Initialize Database
-
-```bash
+# Initialize the database (indexes the last 7 days of Claude Code conversations)
 cc-conversation-search init
 ```
 
-This creates the database and indexes your last 7 days of conversations.
-
-#### 3. Install Skill (Optional)
+### Install the Claude Code skill (optional but recommended)
 
 ```bash
 mkdir -p ~/.claude/skills/conversation-search
 cp skills/conversation-search/* ~/.claude/skills/conversation-search/
 ```
 
-### Basic Usage
+### Basic usage
 
 ```bash
-# Search for conversations (shows session ID and resume commands)
+# Search
 cc-conversation-search search "authentication bug"
-
-# Search with calendar date filters
 cc-conversation-search search "react hooks" --date yesterday
 cc-conversation-search search "auth" --since 2025-11-10 --until 2025-11-13
 
-# List conversations by date
+# List by date
 cc-conversation-search list --date yesterday
 cc-conversation-search list --since "2025-11-01"
 
-# Traditional relative time filters still work
+# Relative time still works
 cc-conversation-search search "query" --days 30
 
-# Get resume commands for a specific message
+# Resume hint for a specific message
 cc-conversation-search resume <MESSAGE_UUID>
-
-# Use with uvx (no install needed)
-uvx cc-conversation-search search "query"
 ```
 
-### Using with Claude Code Skill
+### From inside Claude Code (with the skill installed)
 
-Once installed, ask Claude:
+Ask Claude naturally:
 
-**Topic-based queries:**
-- "Find that conversation where we discussed authentication"
-- "Locate the conversation about React hooks"
-- "What did we talk about regarding the database?"
+- *"Find that conversation where we discussed the Cloudflare Modbus integration."*
+- *"What did we work on yesterday?"*
+- *"Summarize this week's sessions on the rosemary repotting."*
 
-**Temporal queries (NEW in v0.4.8):**
-- "What did we work on yesterday?"
-- "Summarize today's conversations"
-- "Show me this week's work"
+The skill picks the right CLI command, runs it, and shows you matches with session IDs and resume commands.
 
-**Hybrid queries:**
-- "Find yesterday's authentication work"
-- "Show recent Redis discussions"
-
-**Auto-Installation**: If the CLI tool isn't installed, the skill will automatically attempt to install it via `uv` or `pip`, then initialize the database. In most cases, everything "just works" after installing the plugin!
-
-Claude will show you the session ID, project path, and exact commands to resume the conversation.
-
-## Command Reference
+## Command reference
 
 ### `cc-conversation-search init`
-Initialize database and perform initial indexing
+
+Initialize the database and perform initial indexing.
+
 ```bash
 cc-conversation-search init [--days 7] [--no-extract] [--force]
 ```
 
 ### `cc-conversation-search index`
-JIT index conversations (instant, no AI calls)
+
+JIT index conversations (instant, no AI calls). The skill always runs this before `search` for fresh data.
+
 ```bash
 cc-conversation-search index [--days N] [--all] [--no-extract]
 ```
 
-**IMPORTANT**: The skill always runs `index` before `search` for fresh data.
-
 ### `cc-conversation-search search`
-Search conversations with flexible date filtering
+
 ```bash
-# Traditional relative time
+# Relative time
 cc-conversation-search search "query" [--days N] [--project PATH] [--content] [--json]
 
-# Calendar date filtering (v0.4.8+)
+# Calendar dates
 cc-conversation-search search "query" --date yesterday [--json]
 cc-conversation-search search "query" --date 2025-11-13 [--json]
 cc-conversation-search search "query" --since 2025-11-10 --until 2025-11-13 [--json]
-
-# Date formats: YYYY-MM-DD, "yesterday", "today"
-# Note: --days cannot be combined with --date/--since/--until
 ```
 
+`--days` cannot be combined with `--date` / `--since` / `--until`. Date formats: `YYYY-MM-DD`, `yesterday`, `today`.
+
 ### `cc-conversation-search context`
-Get context around a specific message
+
+Get surrounding context around a specific message.
+
 ```bash
 cc-conversation-search context MESSAGE_UUID [--depth 5] [--content] [--json]
 ```
 
 ### `cc-conversation-search list`
-List recent conversations with calendar date support
-```bash
-# Traditional relative time
-cc-conversation-search list [--days 7] [--limit 20] [--json]
 
-# Calendar date filtering (v0.4.8+)
+List recent conversations with calendar date support.
+
+```bash
+cc-conversation-search list [--days 7] [--limit 20] [--json]
 cc-conversation-search list --date yesterday [--json]
 cc-conversation-search list --since 2025-11-10 --until today [--json]
 ```
 
 ### `cc-conversation-search tree`
-View conversation tree structure
+
+View conversation tree structure for a session.
+
 ```bash
 cc-conversation-search tree SESSION_ID [--json]
 ```
 
-## Architecture
-
-```
-~/.claude/
-├── projects/           # Claude Code conversation files (JSONL)
-│   └── {project}/
-│       └── {session}.jsonl
-└── skills/
-    └── conversation-search/  # Optional Skill
-
-~/.conversation-search/
-└── index.db           # SQLite database with indexed conversations
-```
-
-**Key Purpose**: Find session IDs and project paths to resume past conversations.
-
-### Database Schema
-
-- **messages**: Individual messages with summaries, tree structure (parent_uuid), timestamps
-- **conversations**: Session metadata with conversation summaries
-- **message_summaries_fts**: FTS5 full-text search index
-- **index_queue**: Processing queue for batch operations
-
-## How It Works
-
-1. **Indexer**: Scans `~/.claude/projects/` for JSONL conversation files, parses tree structure
-2. **Smart Extraction**: Hybrid approach - full user content + first 500/last 200 chars for assistant
-3. **Meta-Conversation Filtering**: Automatically detects and excludes conversations where Claude used the search tool (prevents search results pollution)
-4. **Search**: FTS5 full-text search over extracted content with conversation tree traversal
-5. **Calendar Date Filtering**: Intuitive date parameters (`--date yesterday`) using SQLite date functions
-6. **JIT Indexing**: Skill runs `index` before `search` for fresh data (instant, no AI calls)
-7. **Local Timezone Display**: All timestamps converted to your local timezone for readability
-
-## Claude Code Skill
-
-The included Skill allows Claude to search your conversation history automatically.
-
-**Example usage:**
-
-**Topic-based query:**
-```
-User: "Find that conversation where we started implementing the API"
-Claude: [Activates conversation-search Skill]
-        [Classifies as Topic query]
-        [Runs: cc-conversation-search search "implementing API" --days 14 --json]
-        [Finds match]
-        [Displays session ID, project path, and resume commands]
-
-        Output:
-        Session: abc-123-session-id
-        Project: /home/user/projects/myproject
-        Time: 2025-11-13 22:50 (local time)
-
-        To resume:
-          cd /home/user/projects/myproject
-          claude --resume abc-123-session-id
-```
-
-**Temporal query (NEW in v0.4.8):**
-```
-User: "What did we work on yesterday?"
-Claude: [Activates conversation-search Skill]
-        [Classifies as Temporal query]
-        [Runs: cc-conversation-search list --date yesterday --json]
-        [Analyzes conversations by project]
-
-        Output:
-        Yesterday's work summary:
-
-        Project: /home/user/projects/api-service
-        - Implemented Redis caching layer
-        - Fixed authentication timeout bug
-        Session: def-456-session-id
-
-        Project: /home/user/projects/frontend
-        - Updated React components for new API
-        Session: ghi-789-session-id
-```
-
-See `skills/conversation-search/SKILL.md` for progressive search workflow and complete documentation.
-
-## Advanced Usage
-
-### JSON Output for Scripting
-
-All commands support `--json` flag:
-```bash
-# Export search results
-cc-conversation-search search "authentication" --json > auth_convs.json
-
-# Programmatic processing
-cc-conversation-search list --days 30 --json | jq '.[] | .conversation_summary'
-```
-
-### Programmatic Use
+## Programmatic API
 
 ```python
 from conversation_search.core.search import ConversationSearch
 from conversation_search.core.indexer import ConversationIndexer
 
-# Search for messages with calendar date filtering
 search = ConversationSearch()
 
-# Traditional relative time
+# Relative time
 results = search.search_conversations("authentication", days_back=7)
 
-# New calendar date filtering (v0.4.8+)
+# Calendar dates
 results = search.search_conversations("authentication", date="yesterday")
 results = search.search_conversations("auth", since="2025-11-10", until="2025-11-13")
 
@@ -278,114 +198,219 @@ for r in results:
 convs = search.list_recent_conversations(date="yesterday")
 convs = search.list_recent_conversations(since="2025-11-10", until="today")
 
-# Index conversations
+# Re-index
 indexer = ConversationIndexer()
 indexer.index_all(days_back=7)
 indexer.close()
 ```
 
-## Configuration
+JSON output (`--json` flag) is supported on every command for scripting:
 
-**Database location:** `~/.conversation-search/index.db`
+```bash
+cc-conversation-search search "authentication" --json > auth.json
+cc-conversation-search list --days 30 --json | jq '.[] | .conversation_summary'
+```
 
-**No configuration file needed** - all settings via command-line flags.
+## Source-specific notes (planned adapter work)
+
+For the v1 multi-CLI work, each adapter has its own quirks to handle:
+
+### Claude Code
+
+- **Sidecar tool outputs**: large tool results are persisted to `~/.claude/projects/<proj>/tool-results/<tool_use_id>.txt` and the JSONL line only contains a 2KB preview wrapped in `<persisted-output>` tags. The adapter must detect the wrapper and substitute the full sidecar content.
+- **Defensive parsing**: a known bug ([anthropics/claude-code#23948](https://github.com/anthropics/claude-code/issues/23948)) sometimes duplicates the full output in both places — dedupe.
+- **Schema isn't officially documented yet** ([anthropics/claude-code#53516](https://github.com/anthropics/claude-code/issues/53516)). Crib from community parsers: `claude-code-log`, `claude-JSONL-browser`, `lm-assist`.
+- **Thinking blocks**: index `thinking` content — that's often where the actual reasoning lives.
+
+### Codex CLI
+
+- **Use the official schema dumper** instead of reverse-engineering:
+
+  ```bash
+  codex app-server generate-internal-json-schema --out ./codex-schema.json
+  ```
+
+  Reference type: `RolloutLine`. Generate a typed parser with `datamodel-code-generator`.
+
+- **`--ephemeral`** sessions aren't persisted — out of scope for the indexer.
+- **`/compact` and `thread/rollback`** rewrite the rollout in place. Incremental indexer must re-parse the whole file on detection rather than tail.
+
+### Gemini CLI
+
+- **Auto-save only landed in v0.20.0 (Dec 2025)** — older sessions only exist if user explicitly ran `/chat save <tag>`.
+- **Retention pruning is on by default.** Set in `~/.gemini/settings.json`:
+
+  ```json
+  { "general": { "sessionRetention": { "enabled": true, "maxAge": "365d", "maxCount": 1000 } } }
+  ```
+
+- **Format is less stable than Claude/Codex** — the adapter should be lenient: tolerate missing fields, version the parser, log unknown record types rather than crash.
+
+## Roadmap
+
+### v1 — must
+
+1. Refactor parser into a pluggable `BaseAdapter` interface + `ParsedMessage` dataclass.
+2. Add `ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter` (~80 LoC each).
+3. Add `source` column to the schema; rebuild FTS5; migration.
+4. Wrap `ConversationSearch` in an MCP server (stdio transport, `mcp` Python SDK). Tools: `search` (fragment-first), `get_context`, `list`.
+5. Update the Claude Code skill to call MCP and return fragments by default. Resume hints become opt-in.
+6. Per-source resume hint helpers in `list` output (`claude --resume`, `codex resume`, `gemini --resume`).
+7. Rename CLI binary from `cc-conversation-search` to `agent-recall`.
+
+### v2 — nice to have
+
+- Filesystem watcher (`watchdog`) for live indexing instead of JIT.
+- Hybrid retrieval: FTS5 + local embeddings via Ollama (`nomic-embed-text`), stored with the `sqlite-vec` extension. Score = `α·BM25 + (1-α)·cosine`.
+- Smart chunking for long assistant messages (~300-token semantic chunks) instead of truncation at 500/200 chars.
+- Tool-call-aware indexing: separate `tool_name` / `tool_args_json` columns so "the Cloudflare Modbus integration" matches tool args.
+- Session-start AI briefing (inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall)): an LLM-generated digest of recent activity injected on `SessionStart`.
+- Optional cross-encoder reranker on top-k.
+
+### Out of scope
+
+- Web UI / dashboard.
+- Conversation analytics (topics, frequency).
+- Cross-machine sync.
+
+## Architecture today (inherited)
+
+The Claude-only ancestor's storage layout, which v1 will extend:
+
+```
+~/.claude/
+└── projects/
+    └── {project}/
+        └── {session}.jsonl
+
+~/.conversation-search/
+└── index.db          # SQLite database with FTS5 over indexed messages
+```
+
+### Database schema (current)
+
+- **messages**: individual messages with summaries, tree structure (`parent_uuid`), timestamps.
+- **conversations**: session metadata with conversation summaries.
+- **message_summaries_fts**: FTS5 full-text search index.
+- **index_queue**: processing queue for batch operations.
+
+v1 adds a `source` column to `messages` to discriminate Claude / Codex / Gemini.
+
+### How it works (current)
+
+1. **Indexer**: scans `~/.claude/projects/` for JSONL conversation files, parses tree structure.
+2. **Smart extraction**: hybrid approach — full user content + first 500 / last 200 chars for assistant.
+3. **Meta-conversation filtering**: excludes conversations where Claude used the search tool itself (prevents recursive pollution).
+4. **Search**: FTS5 over extracted content with conversation tree traversal.
+5. **JIT indexing**: skill runs `index` before `search` for fresh data — no API calls, no delays.
+6. **Local timezone display**: all timestamps converted to the local timezone for readability.
 
 ## Performance
 
-- **Smart Extraction**: Instant (no AI calls), deterministic
-- **Indexing Speed**: ~1000+ messages/second (no API latency)
-- **Storage**: ~1-2KB per message (extracted text + metadata)
-- **Search Speed**: SQLite FTS5 is very fast, even with 100K+ messages
-- **Cost**: $0 (no AI API calls during indexing)
+- **Indexing speed**: ~1000+ messages/second (no API latency).
+- **Storage**: ~1-2 KB per message (extracted text + metadata).
+- **Search speed**: SQLite FTS5 stays fast at 100K+ messages.
+- **Cost**: $0 — no AI API calls during indexing.
+
+## Configuration
+
+Database lives at `~/.conversation-search/index.db`. No config file — everything via command-line flags.
+
+(Will become `~/.agent-recall/index.db` after the rename.)
 
 ## Development
 
-### Setup
-
 ```bash
-git clone https://github.com/akatz-ai/cc-conversation-search
-cd cc-conversation-search
-uv tool install -e .
-```
-
-### Run Tests
-
-```bash
+git clone https://github.com/laurynas-pliuskys/agent-recall.git
+cd agent-recall
+pip install -e .
 pytest tests/
 ```
 
-### Project Structure
+### Project structure
 
 ```
-conversation-search/
+agent-recall/
 ├── src/
-│   └── conversation_search/
-│       ├── __init__.py
-│       ├── cli.py              # Unified CLI
+│   └── conversation_search/        # to be renamed agent_recall
+│       ├── cli.py                  # unified CLI
 │       ├── core/
-│       │   ├── indexer.py      # Conversation indexing + meta-filtering
-│       │   ├── search.py       # Search functionality + date filtering
-│       │   ├── date_utils.py   # Calendar date parsing (v0.4.8+)
-│       │   └── summarization.py # Smart hybrid extraction
+│       │   ├── indexer.py          # to be split into adapters/ + indexer.py
+│       │   ├── search.py
+│       │   ├── date_utils.py
+│       │   └── summarization.py
 │       └── data/
-│           └── schema.sql      # Database schema
+│           └── schema.sql
 ├── skills/
 │   └── conversation-search/
-│       ├── SKILL.md           # Claude Code Skill with query classification
-│       └── REFERENCE.md       # Complete command reference
+│       ├── SKILL.md                # Claude Code skill
+│       └── REFERENCE.md
 ├── tests/
-│   ├── test_date_utils.py     # Date parsing tests
-│   ├── test_date_filtering.py # Date filter integration tests
-│   └── test_search_pair_detection.py # Meta-filtering tests
 ├── pyproject.toml
 └── README.md
 ```
 
+After the v1 refactor:
+
+```
+src/agent_recall/
+├── adapters/
+│   ├── base.py        # ParsedMessage + BaseAdapter
+│   ├── claude.py
+│   ├── codex.py
+│   └── gemini.py
+├── core/
+│   ├── indexer.py     # drives the adapter list
+│   ├── search.py      # source filter + fragment-first output
+│   └── ...
+├── mcp_server.py      # stdio MCP using `mcp` SDK
+└── cli.py
+```
+
 ## Troubleshooting
 
-**"Database not found" error:**
+**"Database not found"**
+
 ```bash
 cc-conversation-search init
 ```
 
-**"No conversations found":**
-- Verify `~/.claude/projects/` exists and contains JSONL files
-- Use Claude Code to create some conversations first
+**"No conversations found"**
 
-**Want to skip extraction and use raw content only:**
+- Verify `~/.claude/projects/` exists and contains JSONL files.
+- Use Claude Code to create some conversations first.
+
+**Skip extraction, use raw content only**
+
 ```bash
-# Store only raw content (even faster, but less optimized for search)
 cc-conversation-search init --no-extract
 ```
 
-**Skill not activating:**
-- Check Skill location: `ls ~/.claude/skills/conversation-search/SKILL.md`
-- Verify YAML frontmatter format
-- Restart Claude Code
-- Try explicit trigger: "Search my conversations for X"
+**Skill not activating in Claude Code**
 
-**Import errors:**
-```bash
-uv tool uninstall cc-conversation-search
-uv tool install cc-conversation-search
-```
+- Check skill location: `ls ~/.claude/skills/conversation-search/SKILL.md`
+- Verify YAML frontmatter format.
+- Restart Claude Code.
+- Try an explicit trigger: *"Search my conversations for X."*
 
 ## Contributing
 
-PRs welcome! This is an experimental tool to improve Claude Code workflow.
+Issues and PRs welcome. Useful areas (most of these are also on the [Roadmap](#roadmap)):
 
-### Areas for Contribution
+- Codex or Gemini adapter implementations.
+- Semantic search via `sqlite-vec` + Ollama.
+- Web UI for conversation tree visualization.
+- Export conversation branches as Markdown.
+- Conversation analytics (topics, frequency).
 
-- Vector embeddings for semantic similarity search
-- Web UI for conversation tree visualization
-- Export conversation branches as markdown
-- Conversation analytics (topics, frequency, etc.)
-- Additional Claude Code Skills using the search API
+## A note on the name
+
+There's an unrelated project by [mnardit](https://github.com/mnardit) also named [`agent-recall`](https://github.com/mnardit/agent-recall). That one is a knowledge-graph memory server in the same family as Mem0 / MemMachine — agents actively push curated facts via MCP tools. This project does the opposite: it passively indexes the raw transcripts the CLIs already save. The two are complementary and can plausibly run side by side. Choose this one when you want to search what was actually said; choose that one when you want a structured knowledge graph the agent curates as it works.
+
+## Acknowledgements
+
+Forked from [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — the original Claude-only ancestor and the source of the JIT-indexing-into-FTS5 pattern. The planned session-start AI briefing is inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall).
 
 ## License
 
 MIT
-
-## Acknowledgments
-
-Built for the Claude Code ecosystem. Uses smart hybrid extraction for instant, cost-free indexing.

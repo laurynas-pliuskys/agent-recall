@@ -1,12 +1,12 @@
 [project]
-name = "cc-conversation-search"
-version = "0.5.3"
-description = "Find and resume Claude Code conversations using smart hybrid extraction and JIT indexing"
+name = "agent-recall"
+version = "0.1.0"
+description = "Search your past Claude Code, Codex, and Gemini CLI conversations"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
 authors = [
-    {name = "akatz-ai", email = "katzfeyalex+akatzgh@gmail.com"}
+    {name = "laurynas-pliuskys"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,8 +23,8 @@ classifiers = [
 cc-conversation-search = "conversation_search.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/akatz-ai/cc-conversation-search"
-Issues = "https://github.com/akatz-ai/cc-conversation-search/issues"
+Homepage = "https://github.com/laurynas-pliuskys/agent-recall"
+Issues = "https://github.com/laurynas-pliuskys/agent-recall/issues"
 
 [build-system]
 requires = ["hatchling"]

@@ -14,7 +14,7 @@ from conversation_search.core.indexer import ConversationIndexer
 from conversation_search.core.search import ConversationSearch, format_timestamp
 
 try:
-    __version__ = version("cc-conversation-search")
+    __version__ = version("agent-recall")
 except PackageNotFoundError:
     __version__ = "dev"
 

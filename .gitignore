@@ -1,17 +1,22 @@
+# Python cache
 *.pyc
 __pycache__/
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python build/package artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# SQLite databases (used by the app locally/during testing)
 *.db
 *.db-journal
 *.db-shm
 *.db-wal
-.DS_Store
+
+# Logs
 *.log
-.venv/
-venv/
-*.swp
-*.swo
-*~
-*.egg-info
-dist/
-build/
-*.egg

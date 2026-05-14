@@ -10,7 +10,7 @@
 ## Bumping Version
 
 ```bash
-./scripts/bump-version.sh 0.5.3
+./scripts/bump-version.sh 0.1.0
 ```
 
 This updates all version locations:
@@ -25,17 +25,15 @@ This prevents CI failures from trying to upload duplicate versions.
 
 ## Breaking Changes
 
-Only bump minor version (0.4 → 0.5) for breaking changes. Update SKILL.md minimum version if needed.
+Only bump minor version (0.1 → 0.2) for breaking changes. Update SKILL.md minimum version if needed.
 
 
-# UV
+# Testing
 
-## Testing
-
-You should use uv to run tests:
+You can run tests using pytest:
 
 ```bash
-uv run pytest tests/ -v
+pytest tests/ -v
 
-uv run pytest tests/<filename> # run specific test
+pytest tests/<filename> # run specific test
 ```

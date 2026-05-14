@@ -1,6 +1,6 @@
 #!/bin/bash
 # Bump version in all required files
-# Usage: ./scripts/bump-version.sh 0.5.3
+# Usage: ./scripts/bump-version.sh 0.1.0
 
 set -e
 
@@ -8,7 +8,7 @@ if [ -z "$1" ]; then
     CURRENT=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
     echo "Current version: $CURRENT"
     echo "Usage: $0 <new-version>"
-    echo "Example: $0 0.5.3"
+    echo "Example: $0 0.1.0"
     exit 1
 fi
 
