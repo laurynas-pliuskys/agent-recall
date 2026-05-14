@@ -38,8 +38,9 @@ class ConversationIndexer:
 
     def _init_db(self):
         """Initialize database with schema and run migrations"""
-        schema_sql = files('conversation_search.data').joinpath('schema.sql').read_text()
-        self.conn.executescript(schema_sql)
+        # Run column migrations before executing the full schema so that
+        # CREATE INDEX statements in schema.sql can reference new columns even
+        # on pre-existing databases that don't have those columns yet.
 
         # Migration: Add is_meta_conversation if missing (for existing databases)
         try:
@@ -51,7 +52,20 @@ class ConversationIndexer:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Migration: Add source column if missing (for existing databases)
+        for table in ("messages", "conversations"):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'"
+                )
+                if not self.quiet:
+                    print(f"  Migrated {table}: added source column")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         self.conn.commit()
+
+        schema_sql = files('conversation_search.data').joinpath('schema.sql').read_text()
+        self.conn.executescript(schema_sql)
 
     def _get_summarizer_project_hash(self) -> Optional[str]:
         """Get the project hash for summarizer workspace by detection"""
