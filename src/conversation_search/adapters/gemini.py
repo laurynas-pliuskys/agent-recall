@@ -34,6 +34,11 @@ class GeminiAdapter(BaseAdapter):
         return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
 
     def parse(self, file_path: Path) -> Tuple[ConversationMeta, List[ParsedMessage]]:
+        """
+        Parse Gemini chat JSON.
+        REVIEW: The parser now handles the actual Gemini CLI JSON format (dict with 'messages' key)
+        in addition to the previously assumed list format.
+        """
         session_id = file_path.stem
         project_path = file_path.parent.parent.name
         messages: List[ParsedMessage] = []

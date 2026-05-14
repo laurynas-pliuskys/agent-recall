@@ -29,6 +29,10 @@ class ConversationMeta:
 
 
 class BaseAdapter(ABC):
+    """
+    Base class for conversation adapters.
+    REVIEW: This abstraction is well-defined and allows for easy extension to other chat formats.
+    """
     source: str  # subclasses set this as a class attribute
 
     @abstractmethod

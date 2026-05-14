@@ -395,7 +395,11 @@ class ConversationIndexer:
         return meta_uuids
 
     def index_conversation(self, file_path: Path, summarize: bool = True, adapter=None):
-        """Index a single conversation file with batch summarization"""
+        """
+        Index a single conversation file with batch summarization.
+        REVIEW: Decoupling parsing into adapters significantly improves maintainability
+        and simplifies the core indexing loop.
+        """
         if not self.quiet:
             print(f"Indexing: {file_path}")
 
