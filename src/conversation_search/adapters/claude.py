@@ -38,7 +38,7 @@ class ClaudeAdapter(BaseAdapter):
         summary_line = None
 
         with open(file_path, "r") as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
@@ -47,7 +47,7 @@ class ClaudeAdapter(BaseAdapter):
                 except json.JSONDecodeError:
                     continue
 
-                if line_num == 1 and data.get("type") == "summary":
+                if summary_line is None and not messages and data.get("type") == "summary":
                     summary_line = data
                     continue
 
