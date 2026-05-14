@@ -45,27 +45,38 @@ class GeminiAdapter(BaseAdapter):
             logger.warning("Gemini: failed to parse %s: %s", file_path, e)
             return self._empty_meta(session_id, project_path, file_path), []
 
-        if not isinstance(data, list):
-            logger.warning("Gemini: expected list at top level in %s", file_path)
+        # Handle both list (older format?) and dict with 'messages' key
+        raw_messages = []
+        if isinstance(data, list):
+            raw_messages = data
+        elif isinstance(data, dict):
+            raw_messages = data.get("messages", [])
+            session_id = data.get("sessionId", session_id)
+        else:
+            logger.warning("Gemini: unexpected data type in %s", file_path)
             return self._empty_meta(session_id, project_path, file_path), []
 
-        msg_index = 0  # counts only messages we actually include
-        for i, record in enumerate(data):
+        msg_index = 0
+        for i, record in enumerate(raw_messages):
             if not isinstance(record, dict):
                 continue
 
-            role = record.get("role")
-            if role == "model":
+            # Handle both 'role' and 'type'
+            role = record.get("role") or record.get("type")
+            if role in ("model", "gemini"):
                 role = "assistant"
+            
             if role not in ("user", "assistant"):
                 continue
 
-            content = self._extract_content(record.get("parts", []))
+            # Handle both 'parts' and 'content' (list of blocks)
+            content_blocks = record.get("parts") or record.get("content", [])
+            content = self._extract_content(content_blocks)
             if not content:
                 continue
 
             messages.append(ParsedMessage(
-                uuid=f"{session_id}-{msg_index}",
+                uuid=record.get("id") or f"{session_id}-{msg_index}",
                 parent_uuid=f"{session_id}-{msg_index - 1}" if msg_index > 0 else None,
                 session_id=session_id,
                 timestamp=record.get("timestamp", ""),
