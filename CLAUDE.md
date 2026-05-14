@@ -13,10 +13,7 @@
 ./scripts/bump-version.sh 0.1.0
 ```
 
-This updates all version locations:
-- `pyproject.toml` (PyPI package)
-- `.claude-plugin/plugin.json` (plugin metadata)
-- `.claude-plugin/marketplace.json` (marketplace metadata)
+This updates `pyproject.toml` (the single source of truth).
 
 ## Pre-push Hook
 

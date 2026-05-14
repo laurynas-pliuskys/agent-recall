@@ -17,18 +17,9 @@ NEW_VERSION="$1"
 # Update pyproject.toml
 sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
 
-# Update plugin.json
-sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" .claude-plugin/plugin.json
-
-# Update marketplace.json
-sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" .claude-plugin/marketplace.json
-
-echo "Updated version to $NEW_VERSION in:"
-echo "  - pyproject.toml"
-echo "  - .claude-plugin/plugin.json"
-echo "  - .claude-plugin/marketplace.json"
+echo "Updated version to $NEW_VERSION in pyproject.toml"
 
 # Verify
 echo ""
 echo "Verification:"
-grep -n "version.*$NEW_VERSION" pyproject.toml .claude-plugin/*.json
+grep -n "version.*$NEW_VERSION" pyproject.toml
