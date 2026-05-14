@@ -126,3 +126,33 @@ def test_message_uuids_and_parent_chain(tmp_path):
     assert messages[1].parent_uuid == "mysession-0"
     assert messages[2].uuid == "mysession-2"
     assert messages[2].parent_uuid == "mysession-1"
+
+
+def test_parse_modern_dict_format(tmp_path):
+    chat_file = tmp_path / "modern.json"
+    chat_file.write_text(json.dumps({
+        "sessionId": "modern-session-123",
+        "messages": [
+            {
+                "id": "msg-1",
+                "type": "user",
+                "content": [{"text": "Hello"}]
+            },
+            {
+                "id": "msg-2",
+                "type": "gemini",
+                "content": [{"text": "Hi there"}]
+            }
+        ]
+    }))
+    adapter = GeminiAdapter()
+    meta, messages = adapter.parse(chat_file)
+
+    assert meta.session_id == "modern-session-123"
+    assert len(messages) == 2
+    assert messages[0].uuid == "msg-1"
+    assert messages[0].role == "user"
+    assert messages[0].content == "Hello"
+    assert messages[1].uuid == "msg-2"
+    assert messages[1].role == "assistant"
+    assert messages[1].content == "Hi there"
