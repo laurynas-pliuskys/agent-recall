@@ -2,9 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor the monolithic Claude-only indexer into a pluggable adapter pattern and add Codex + Gemini adapters, while keeping Claude indexing working throughout.
+**Goal:** Refactor the monolithic Claude-only indexer into a pluggable adapter pattern and add a Gemini CLI adapter, while keeping Claude indexing working throughout. (Codex adapter deferred — not currently in use.)
 
-**Architecture:** Extract parsing into `BaseAdapter` + per-CLI adapters (`ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter`); refactor `ConversationIndexer` to drive the adapter list; add a `source` column to the schema with a one-shot migration for existing DBs.
+**Architecture:** Extract parsing into `BaseAdapter` + per-CLI adapters (`ClaudeAdapter`, `GeminiAdapter`); refactor `ConversationIndexer` to drive the adapter list; add a `source` column to the schema with a one-shot migration for existing DBs.
+
+## Session Checkpoint (2026-05-14)
+
+**Completed:**
+- [x] Task 1: `ParsedMessage`, `ConversationMeta`, `BaseAdapter` — committed `0a5dff8`
+
+**In progress / remaining:**
+- Task 2: `ClaudeAdapter`
+- ~~Task 3: `CodexAdapter`~~ — **DROPPED** (user doesn't use Codex yet)
+- Task 4: `GeminiAdapter` (renumbered Task 3)
+- Task 5: `source` column schema + migration
+- Task 6: Refactor `ConversationIndexer` to use adapter list
+- Task 7: `source` filter in `ConversationSearch`
+- Task 8: Smoke test end-to-end
+
+**To resume:** Run `pytest tests/ -v` to confirm baseline, then pick up at Task 2. The package is installed editable (`pip install -e .`). Git branch: `main` at `0a5dff8`.
 
 **Tech Stack:** Python 3.9+, SQLite FTS5, `dataclasses`, `abc`, `pathlib`, `json`
 
@@ -17,14 +33,14 @@
 | Create | `src/conversation_search/adapters/__init__.py` | Package marker |
 | Create | `src/conversation_search/adapters/base.py` | `ParsedMessage`, `ConversationMeta`, `BaseAdapter` ABC |
 | Create | `src/conversation_search/adapters/claude.py` | `ClaudeAdapter` — wraps existing JSONL parse logic |
-| Create | `src/conversation_search/adapters/codex.py` | `CodexAdapter` — parses `~/.codex/sessions/` rollouts |
+| ~~Create~~ | ~~`src/conversation_search/adapters/codex.py`~~ | ~~`CodexAdapter`~~ — DROPPED |
 | Create | `src/conversation_search/adapters/gemini.py` | `GeminiAdapter` — parses `~/.gemini/tmp/` chat JSON |
 | Modify | `src/conversation_search/core/indexer.py` | Drive adapter list; accept `(path, adapter)` pairs |
 | Modify | `src/conversation_search/data/schema.sql` | Add `source` column to `messages` + `conversations` |
 | Modify | `src/conversation_search/core/search.py` | Accept optional `source` filter in `search_conversations` and `list_recent_conversations` |
 | Create | `tests/adapters/__init__.py` | Package marker |
 | Create | `tests/adapters/test_claude_adapter.py` | Unit tests for `ClaudeAdapter.parse` |
-| Create | `tests/adapters/test_codex_adapter.py` | Unit tests for `CodexAdapter.parse` |
+| ~~Create~~ | ~~`tests/adapters/test_codex_adapter.py`~~ | DROPPED |
 | Create | `tests/adapters/test_gemini_adapter.py` | Unit tests for `GeminiAdapter.parse` |
 | Create | `tests/test_schema_migration.py` | Migration adds `source` column to existing DB |
 
