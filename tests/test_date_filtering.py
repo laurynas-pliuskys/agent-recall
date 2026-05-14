@@ -39,7 +39,8 @@ class TestSearchWithDateFilters:
                 is_tool_noise BOOLEAN DEFAULT FALSE,
                 is_meta_conversation BOOLEAN DEFAULT FALSE,
                 summary_method TEXT,
-                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL DEFAULT 'claude'
             );
 
             CREATE TABLE conversations (
@@ -52,7 +53,8 @@ class TestSearchWithDateFilters:
                 first_message_at TEXT,
                 last_message_at TEXT,
                 message_count INTEGER DEFAULT 0,
-                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL DEFAULT 'claude'
             );
 
             CREATE VIRTUAL TABLE message_content_fts USING fts5(
@@ -269,7 +271,8 @@ class TestListWithDateFilters:
                 is_tool_noise BOOLEAN DEFAULT FALSE,
                 is_meta_conversation BOOLEAN DEFAULT FALSE,
                 summary_method TEXT,
-                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL DEFAULT 'claude'
             );
 
             CREATE TABLE conversations (
@@ -282,7 +285,8 @@ class TestListWithDateFilters:
                 first_message_at TEXT,
                 last_message_at TEXT,
                 message_count INTEGER DEFAULT 0,
-                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                source TEXT NOT NULL DEFAULT 'claude'
             );
         """)
 
