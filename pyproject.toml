@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 [project.scripts]
-cc-conversation-search = "conversation_search.cli:main"
+agent-recall = "conversation_search.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/laurynas-pliuskys/agent-recall"

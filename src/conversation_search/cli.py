@@ -75,9 +75,9 @@ def cmd_init(args):
         print(f"\n✓ Initialization complete!")
         print(f"  Database: {db_path}")
         print(f"\nNext steps:")
-        print(f"  • Search conversations: cc-conversation-search search '<query>'")
-        print(f"  • List recent: cc-conversation-search list")
-        print(f"  • Re-index: cc-conversation-search index")
+        print(f"  • Search conversations: agent-recall search '<query>'")
+        print(f"  • List recent: agent-recall list")
+        print(f"  • Re-index: agent-recall index")
 
     indexer.close()
 
@@ -312,7 +312,7 @@ def cmd_resume(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='cc-conversation-search',
+        prog='agent-recall',
         description='Find and resume Claude Code conversations using semantic search'
     )
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
@@ -392,9 +392,9 @@ def main():
         args.func(args)
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("\nThe cc-conversation-search tool requires initialization.")
-        print("Install: uv tool install cc-conversation-search")
-        print("Initialize: cc-conversation-search init")
+        print("\nThe agent-recall tool requires initialization.")
+        print("Install: uv tool install agent-recall")
+        print("Initialize: agent-recall init")
         sys.exit(1)
     except KeyboardInterrupt:
         print("\n\nInterrupted")
