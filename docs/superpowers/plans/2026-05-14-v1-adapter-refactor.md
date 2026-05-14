@@ -6,21 +6,21 @@
 
 **Architecture:** Extract parsing into `BaseAdapter` + per-CLI adapters (`ClaudeAdapter`, `GeminiAdapter`); refactor `ConversationIndexer` to drive the adapter list; add a `source` column to the schema with a one-shot migration for existing DBs.
 
-## Session Checkpoint (2026-05-14)
+## Session Checkpoint (2026-05-14) — COMPLETE
+
+All tasks done. Branch `main`, final commit `f65f3c6`.
 
 **Completed:**
-- [x] Task 1: `ParsedMessage`, `ConversationMeta`, `BaseAdapter` — committed `0a5dff8`
+- [x] Task 1: `ParsedMessage`, `ConversationMeta`, `BaseAdapter` — `0a5dff8`
+- [x] Task 2: `ClaudeAdapter` — `d550d38` + fix `452f4e5`
+- [x] ~~Task 3: `CodexAdapter`~~ — **DROPPED** (user doesn't use Codex yet)
+- [x] Task 3: `GeminiAdapter` — `6701f97`
+- [x] Task 4: `source` column schema + migration — `701fcac`
+- [x] Task 5: Refactor `ConversationIndexer` to use adapter list — `bc27fac`
+- [x] Task 6: `source` filter in `ConversationSearch` — `f65f3c6`
+- [x] Task 7: Smoke test — 103/104 pass (1 pre-existing date flake in `test_date_filter_on_message_timestamps`), real Claude indexing works: 932 messages with `source='claude'`
 
-**In progress / remaining:**
-- Task 2: `ClaudeAdapter`
-- ~~Task 3: `CodexAdapter`~~ — **DROPPED** (user doesn't use Codex yet)
-- Task 4: `GeminiAdapter` (renumbered Task 3)
-- Task 5: `source` column schema + migration
-- Task 6: Refactor `ConversationIndexer` to use adapter list
-- Task 7: `source` filter in `ConversationSearch`
-- Task 8: Smoke test end-to-end
-
-**To resume:** Run `pytest tests/ -v` to confirm baseline, then pick up at Task 2. The package is installed editable (`pip install -e .`). Git branch: `main` at `0a5dff8`.
+**Known pre-existing issue:** `tests/test_full_content_search.py::test_date_filter_on_message_timestamps` fails because it hardcodes `2025-11-14` as a recent date — now in the past. Not introduced by this work.
 
 **Tech Stack:** Python 3.9+, SQLite FTS5, `dataclasses`, `abc`, `pathlib`, `json`
 
