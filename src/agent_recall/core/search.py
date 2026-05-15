@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Conversation Search Search Tools
+Agent Recall Search Tools
 Provides search and retrieval tools for Claude to query conversation history
 """
 

@@ -4,7 +4,7 @@ description: Find and resume Claude Code conversations by searching topics or fi
 allowed-tools: Bash, TodoWrite, mcp__agent_recall__search, mcp__agent_recall__list, mcp__agent_recall__get_context
 ---
 
-# Conversation Search
+# Agent Recall
 
 Find past conversations and return matching fragments.
 

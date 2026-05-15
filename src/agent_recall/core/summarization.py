@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smart content extraction for conversation-search
+Smart content extraction for agent-recall
 Uses hybrid approach: full user content + smart extraction for assistant messages
 """
 

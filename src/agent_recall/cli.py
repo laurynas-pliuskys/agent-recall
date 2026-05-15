@@ -52,7 +52,7 @@ def cmd_init(args):
     quiet = args.quiet
 
     if not quiet:
-        print("Conversation Search - Initializing")
+        print("Agent Recall - Initializing")
         print("=" * 50)
 
     db_path = Path.home() / ".agent-recall" / "index.db"

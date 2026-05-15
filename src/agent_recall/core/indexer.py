@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Conversation Search Indexer
+Agent Recall Indexer
 Scans ~/.claude/projects and indexes conversations with batch AI summarization
 """
 
