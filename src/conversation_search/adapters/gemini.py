@@ -69,9 +69,9 @@ class GeminiAdapter(BaseAdapter):
             # Handle both 'role' and 'type'
             role = record.get("role") or record.get("type")
             if role in ("model", "gemini"):
-                role = "assistant"
+                role = "ai"
             
-            if role not in ("user", "assistant"):
+            if role not in ("user", "ai"):
                 continue
 
             # Handle both 'parts' and 'content' (list of blocks)

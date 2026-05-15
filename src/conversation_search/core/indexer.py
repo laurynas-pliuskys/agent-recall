@@ -196,7 +196,7 @@ class ConversationIndexer:
                     # Parse message entries
                     if 'uuid' in data and 'message' in data:
                         message_type = data.get('type', 'unknown')
-                        if message_type not in ('user', 'assistant'):
+                        if message_type not in ('user', 'ai'):
                             continue
 
                         # Extract content

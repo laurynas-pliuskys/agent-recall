@@ -28,7 +28,7 @@ def test_parse_returns_meta_and_messages(tmp_path):
             "parentUuid": "msg-1",
             "isSidechain": False,
             "timestamp": "2024-01-15T10:00:01Z",
-            "type": "assistant",
+            "type": "ai",
             "sessionId": "session-abc",
             "message": {"content": [{"type": "text", "text": "I am doing well!"}]},
         },
@@ -50,10 +50,10 @@ def test_parse_returns_meta_and_messages(tmp_path):
     assert user_msg.session_id == "session-abc"
     assert user_msg.is_sidechain is False
 
-    assistant_msg = messages[1]
-    assert assistant_msg.uuid == "msg-2"
-    assert assistant_msg.role == "assistant"
-    assert "I am doing well!" in assistant_msg.content
+    ai_msg = messages[1]
+    assert ai_msg.uuid == "msg-2"
+    assert ai_msg.role == "ai"
+    assert "I am doing well!" in ai_msg.content
 
 
 def test_parse_flattens_tool_use_blocks(tmp_path):
@@ -65,7 +65,7 @@ def test_parse_flattens_tool_use_blocks(tmp_path):
             "parentUuid": None,
             "isSidechain": False,
             "timestamp": "2024-01-15T11:00:00Z",
-            "type": "assistant",
+            "type": "ai",
             "sessionId": "session-def",
             "message": {
                 "content": [
@@ -85,7 +85,7 @@ def test_parse_flattens_tool_use_blocks(tmp_path):
     assert "ls -la" in content
 
 
-def test_parse_skips_non_user_assistant_types(tmp_path):
+def test_parse_skips_non_user_ai_types(tmp_path):
     conv_file = tmp_path / "session3.jsonl"
     _write_jsonl(conv_file, [
         {"type": "summary", "summary": "Mixed types", "leafUuid": "leaf-3"},

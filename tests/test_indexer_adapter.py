@@ -22,7 +22,7 @@ def _write_claude_jsonl(path: Path, session_id: str) -> None:
             "parentUuid": "msg-u1",
             "isSidechain": False,
             "timestamp": "2024-03-01T10:00:01Z",
-            "type": "assistant",
+            "type": "ai",
             "sessionId": session_id,
             "message": {"content": [{"type": "text", "text": "Hello back!"}]},
         }) + "\n")

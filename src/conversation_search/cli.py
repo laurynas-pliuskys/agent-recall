@@ -19,8 +19,8 @@ except PackageNotFoundError:
     __version__ = "dev"
 
 # Configurable Claude command (default: 'claude')
-# Set CC_CONVERSATION_SEARCH_CMD env var to override (e.g., 'clauded' for alias)
-CLAUDE_CMD = os.environ.get('CC_CONVERSATION_SEARCH_CMD', 'claude')
+# Set AGENT_RECALL_CMD env var to override (e.g., 'clauded' for alias)
+CLAUDE_CMD = os.environ.get('AGENT_RECALL_CMD', 'claude')
 
 
 def localize_timestamps(data: Any) -> Any:

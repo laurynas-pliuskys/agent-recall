@@ -25,7 +25,7 @@ def test_parse_basic_conversation(tmp_path):
     assert messages[0].role == "user"
     assert messages[0].content == "What is the capital of France?"
     assert messages[0].source == "gemini"
-    assert messages[1].role == "assistant"  # normalised from "model"
+    assert messages[1].role == "ai"  # normalised from "model"
     assert "Paris" in messages[1].content
 
 
@@ -66,7 +66,7 @@ def test_parse_skips_unknown_roles(tmp_path):
     meta, messages = adapter.parse(chat_file)
     assert len(messages) == 2
     assert messages[0].role == "user"
-    assert messages[1].role == "assistant"
+    assert messages[1].role == "ai"
 
 
 def test_parse_tolerates_invalid_json(tmp_path):
@@ -154,5 +154,5 @@ def test_parse_modern_dict_format(tmp_path):
     assert messages[0].role == "user"
     assert messages[0].content == "Hello"
     assert messages[1].uuid == "msg-2"
-    assert messages[1].role == "assistant"
+    assert messages[1].role == "ai"
     assert messages[1].content == "Hi there"

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- Metadata
     timestamp TEXT NOT NULL,
-    message_type TEXT NOT NULL CHECK(message_type IN ('user', 'assistant')),
+    message_type TEXT NOT NULL CHECK(message_type IN ('user', 'ai')),
     project_path TEXT,
     conversation_file TEXT,  -- Path to the JSONL file
 

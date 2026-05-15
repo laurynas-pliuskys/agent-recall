@@ -10,7 +10,7 @@ class ParsedMessage:
     parent_uuid: Optional[str]
     session_id: str
     timestamp: str
-    role: Literal["user", "assistant"]
+    role: Literal["user", "ai"]
     content: str
     source: str
     is_sidechain: bool = False

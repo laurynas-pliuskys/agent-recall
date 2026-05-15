@@ -55,7 +55,7 @@ class ClaudeAdapter(BaseAdapter):
                     continue
 
                 role = data.get("type")
-                if role not in ("user", "assistant"):
+                if role not in ("user", "ai"):
                     continue
 
                 content = self._extract_content(data["message"].get("content", ""))
