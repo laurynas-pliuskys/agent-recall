@@ -12,6 +12,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from importlib.resources import files
+from conversation_search.adapters.base import BaseAdapter, ConversationMeta, ParsedMessage
+from conversation_search.adapters.claude import ClaudeAdapter
+from conversation_search.adapters.gemini import GeminiAdapter
 from conversation_search.core.summarization import (
     MessageSummarizer,
     is_summarizer_conversation,
@@ -20,11 +23,19 @@ from conversation_search.core.summarization import (
 
 
 class ConversationIndexer:
-    def __init__(self, db_path: str = "~/.conversation-search/index.db", quiet: bool = False):
+    def __init__(
+        self,
+        db_path: str = "~/.conversation-search/index.db",
+        quiet: bool = False,
+        adapters=None,
+    ):
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         self.quiet = quiet
+        if adapters is None:
+            adapters = [ClaudeAdapter(), GeminiAdapter()]
+        self.adapters = adapters
 
         # Enable WAL mode for concurrent access
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -38,8 +49,9 @@ class ConversationIndexer:
 
     def _init_db(self):
         """Initialize database with schema and run migrations"""
-        schema_sql = files('conversation_search.data').joinpath('schema.sql').read_text()
-        self.conn.executescript(schema_sql)
+        # Run column migrations before executing the full schema so that
+        # CREATE INDEX statements in schema.sql can reference new columns even
+        # on pre-existing databases that don't have those columns yet.
 
         # Migration: Add is_meta_conversation if missing (for existing databases)
         try:
@@ -51,7 +63,20 @@ class ConversationIndexer:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Migration: Add source column if missing (for existing databases)
+        for table in ("messages", "conversations"):
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'"
+                )
+                if not self.quiet:
+                    print(f"  Migrated {table}: added source column")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         self.conn.commit()
+
+        schema_sql = files('conversation_search.data').joinpath('schema.sql').read_text()
+        self.conn.executescript(schema_sql)
 
     def _get_summarizer_project_hash(self) -> Optional[str]:
         """Get the project hash for summarizer workspace by detection"""
@@ -128,6 +153,26 @@ class ConversationIndexer:
 
         return sorted(conversation_files, key=lambda p: p.stat().st_mtime, reverse=True)
 
+    def scan_all(self, days_back):
+        """Return (file_path, adapter) pairs from all registered adapters."""
+        pairs = []
+        for adapter in self.adapters:
+            for path in adapter.scan(days_back):
+                pairs.append((path, adapter))
+        return pairs
+
+    def _to_msg_dict(self, msg: ParsedMessage) -> dict:
+        return {
+            "uuid": msg.uuid,
+            "parent_uuid": msg.parent_uuid,
+            "session_id": msg.session_id,
+            "timestamp": msg.timestamp,
+            "message_type": msg.role,
+            "content": msg.content,
+            "is_sidechain": msg.is_sidechain,
+            "is_meta_conversation": False,
+        }
+
     def parse_conversation_file(self, file_path: Path) -> Tuple[Dict, List[Dict]]:
         """
         Parse a conversation JSONL file
@@ -151,7 +196,7 @@ class ConversationIndexer:
                     # Parse message entries
                     if 'uuid' in data and 'message' in data:
                         message_type = data.get('type', 'unknown')
-                        if message_type not in ('user', 'assistant'):
+                        if message_type not in ('user', 'ai'):
                             continue
 
                         # Extract content
@@ -349,44 +394,55 @@ class ConversationIndexer:
 
         return meta_uuids
 
-    def index_conversation(self, file_path: Path, summarize: bool = True):
-        """Index a single conversation file with batch summarization"""
+    def index_conversation(self, file_path: Path, summarize: bool = True, adapter=None):
+        """
+        Index a single conversation file with batch summarization.
+        REVIEW: Decoupling parsing into adapters significantly improves maintainability
+        and simplifies the core indexing loop.
+        """
         if not self.quiet:
             print(f"Indexing: {file_path}")
 
-        # Parse file
-        conv_meta, messages = self.parse_conversation_file(file_path)
+        # Use provided adapter or fall back to ClaudeAdapter for backward compat
+        if adapter is None:
+            adapter = ClaudeAdapter()
 
-        if not messages:
+        # Parse file via adapter
+        conv_meta_obj, parsed_messages = adapter.parse(file_path)
+
+        # Convert ParsedMessage dataclasses to dicts for existing logic
+        msg_dicts = [self._to_msg_dict(m) for m in parsed_messages]
+
+        if not msg_dicts:
             if not self.quiet:
                 print(f"  No messages found in {file_path}")
             return
 
         # Skip summarizer conversations
-        if is_summarizer_conversation(file_path, messages):
+        if is_summarizer_conversation(file_path, msg_dicts):
             if not self.quiet:
                 print(f"  ⏭️  Skipping automated summarizer conversation")
             return
 
         # Mark meta-conversations (search pairs)
-        meta_uuids = self._mark_meta_conversations(messages)
+        meta_uuids = self._mark_meta_conversations(msg_dicts)
         if meta_uuids and not self.quiet:
             pair_count = len(meta_uuids) // 2  # Approximate number of pairs
             print(f"  🏷️  Marking {len(meta_uuids)} meta-search messages (~{pair_count} pairs)")
 
-        # Extract project path from file location
-        project_path = file_path.parent.name.replace('-', '/')
+        # Extract values from ConversationMeta
+        project_path = conv_meta_obj.project_path
+        session_id = conv_meta_obj.session_id
+        source = conv_meta_obj.source
 
-        # Get session ID from first message
-        session_id = messages[0].get('session_id')
         if not session_id:
             if not self.quiet:
                 print(f"  No session_id found in {file_path}")
             return
 
         # Calculate depths
-        parent_map = {m['uuid']: m['parent_uuid'] for m in messages}
-        depths = self.calculate_depth(messages, parent_map)
+        parent_map = {m['uuid']: m['parent_uuid'] for m in msg_dicts}
+        depths = self.calculate_depth(msg_dicts, parent_map)
 
         # Index conversation metadata
         cursor = self.conn.cursor()
@@ -411,19 +467,19 @@ class ConversationIndexer:
             existing_uuids = {row['message_uuid'] for row in cursor.fetchall()}
 
             # Find new messages only
-            new_messages = [m for m in messages if m['uuid'] not in existing_uuids]
+            new_msg_dicts = [m for m in msg_dicts if m['uuid'] not in existing_uuids]
 
-            if not new_messages:
+            if not new_msg_dicts:
                 if not self.quiet:
                     print(f"  No new messages, skipping")
                 return
 
             if not self.quiet:
-                print(f"  Found {len(new_messages)} new messages (total: {len(messages)})")
+                print(f"  Found {len(new_msg_dicts)} new messages (total: {len(msg_dicts)})")
 
             # Save reference to all messages for metadata update
-            all_messages = messages
-            messages = new_messages  # Only process new ones
+            all_msg_dicts = msg_dicts
+            msg_dicts = new_msg_dicts  # Only process new ones
             is_update = True
 
             # Update conversation metadata (use last message from ALL messages, not just new ones)
@@ -435,49 +491,48 @@ class ConversationIndexer:
                     indexed_at = CURRENT_TIMESTAMP
                 WHERE session_id = ?
             """, (
-                all_messages[-1]['timestamp'],
-                len(existing_uuids) + len(new_messages),
-                conv_meta.get('leafUuid') if conv_meta else None,
+                all_msg_dicts[-1]['timestamp'],
+                len(existing_uuids) + len(new_msg_dicts),
+                conv_meta_obj.leaf_uuid,
                 session_id
             ))
         else:
             # New conversation - insert metadata
-            root_message = next((m for m in messages if not m['parent_uuid']), messages[0])
-
             cursor.execute("""
                 INSERT INTO conversations (
                     session_id, project_path, conversation_file,
                     root_message_uuid, leaf_message_uuid, conversation_summary,
-                    first_message_at, last_message_at, message_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    first_message_at, last_message_at, message_count, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                session_id,
-                project_path,
+                conv_meta_obj.session_id,
+                conv_meta_obj.project_path,
                 str(file_path),
-                root_message['uuid'],
-                conv_meta.get('leafUuid') if conv_meta else None,
-                conv_meta.get('summary', 'Untitled conversation') if conv_meta else None,
-                messages[0]['timestamp'],
-                messages[-1]['timestamp'],
-                len(messages)
+                msg_dicts[0]['uuid'],
+                conv_meta_obj.leaf_uuid,
+                conv_meta_obj.summary or 'Untitled conversation',
+                msg_dicts[0]['timestamp'],
+                msg_dicts[-1]['timestamp'],
+                len(msg_dicts),
+                source,
             ))
 
         # Classify messages for tool noise filtering
         tool_noise_uuids = []
-        for message in messages:
+        for message in msg_dicts:
             if self.summarizer.is_tool_noise(message):
                 tool_noise_uuids.append(message['uuid'])
 
         # Insert all messages in a single transaction
         try:
-            for message in messages:
+            for message in msg_dicts:
                 cursor.execute("""
                     INSERT INTO messages (
                         message_uuid, session_id, parent_uuid, is_sidechain,
                         depth, timestamp, message_type, project_path,
                         conversation_file, full_content, is_meta_conversation,
-                        is_tool_noise
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_tool_noise, source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     message['uuid'],
                     session_id,
@@ -490,7 +545,8 @@ class ConversationIndexer:
                     str(file_path),
                     message['content'],
                     message.get('is_meta_conversation', False),
-                    message['uuid'] in tool_noise_uuids
+                    message['uuid'] in tool_noise_uuids,
+                    source,
                 ))
 
             # Commit once at the end
@@ -501,9 +557,9 @@ class ConversationIndexer:
 
             if not self.quiet:
                 if is_update:
-                    print(f"  ✓ Added {len(messages)} new messages")
+                    print(f"  ✓ Added {len(msg_dicts)} new messages")
                 else:
-                    print(f"  ✓ Indexed {len(messages)} messages")
+                    print(f"  ✓ Indexed {len(msg_dicts)} messages")
 
         except sqlite3.Error as e:
             self.conn.rollback()
@@ -513,15 +569,15 @@ class ConversationIndexer:
 
     def index_all(self, days_back: Optional[int] = 1, summarize: bool = True):
         """Index all conversations from the last N days"""
-        files = self.scan_conversations(days_back)
+        pairs = self.scan_all(days_back)
         if not self.quiet:
-            print(f"Found {len(files)} conversation files to index")
+            print(f"Found {len(pairs)} conversation files to index")
 
-        for i, file_path in enumerate(files, 1):
+        for i, (file_path, adapter) in enumerate(pairs, 1):
             if not self.quiet:
-                print(f"\n[{i}/{len(files)}]")
+                print(f"\n[{i}/{len(pairs)}]")
             try:
-                self.index_conversation(file_path, summarize=summarize)
+                self.index_conversation(file_path, summarize=summarize, adapter=adapter)
             except Exception as e:
                 if not self.quiet:
                     print(f"  Error indexing {file_path}: {e}")

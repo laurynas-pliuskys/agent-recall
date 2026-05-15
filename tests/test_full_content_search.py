@@ -5,7 +5,7 @@ import pytest
 import sqlite3
 import tempfile
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from conversation_search.core.indexer import ConversationIndexer
 from conversation_search.core.search import ConversationSearch
 
@@ -59,7 +59,7 @@ class TestFullContentFTSIndexing:
             'test-uuid-1',
             'session-1',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             'This is a long message with unique phrase FINDME in the middle of content',
             False
         ))
@@ -91,7 +91,7 @@ class TestFullContentFTSIndexing:
             'test-uuid-long',
             'session-1',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             content,
             False
         ))
@@ -122,7 +122,7 @@ class TestSnippetExtraction:
             'test-uuid-snippet',
             'session-1',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             'This is some context before the TARGETPHRASE and some context after it.',
             False
         ))
@@ -158,7 +158,7 @@ class TestSnippetExtraction:
             'test-uuid-long-snippet',
             'session-1',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             long_text,
             False
         ))
@@ -193,19 +193,19 @@ class TestSearchWithSnippets:
                 'uuid': 'msg-1',
                 'session': 'session-1',
                 'content': 'You are absolutely right about the authentication bug fix.',
-                'type': 'assistant'
+                'type': 'ai'
             },
             {
                 'uuid': 'msg-2',
                 'session': 'session-2',
                 'content': 'The user asked a question and I responded with detailed info about authentication.',
-                'type': 'assistant'
+                'type': 'ai'
             },
             {
                 'uuid': 'msg-3',
                 'session': 'session-3',
                 'content': ('This is some initial context. ' * 50) + ' You are absolutely right about this middle part. ' + ('This is trailing context. ' * 50),
-                'type': 'assistant'
+                'type': 'ai'
             },
         ]
 
@@ -328,7 +328,7 @@ class TestMetaConversationFiltering:
             'meta-msg',
             'session-meta',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             'Running conversation search tool to find historical messages',
             True  # This is a meta-conversation
         ))
@@ -343,7 +343,7 @@ class TestMetaConversationFiltering:
             'normal-msg',
             'session-normal',
             datetime.now().isoformat(),
-            'assistant',
+            'ai',
             'Running conversation search tool to find historical messages',
             False  # Normal conversation
         ))
@@ -380,8 +380,8 @@ class TestDateFilteringWithFullContent:
                 1
             ))
 
-        # Insert old message
-        old_time = datetime(2025, 10, 1, 12, 0, 0)
+        # Insert old message (10 days ago)
+        old_time = datetime.now() - timedelta(days=10)
         cursor.execute("""
             INSERT INTO messages (
                 message_uuid, session_id, timestamp, message_type,
@@ -391,13 +391,13 @@ class TestDateFilteringWithFullContent:
             'old-msg',
             'session-old',
             old_time.isoformat() + 'Z',
-            'assistant',
+            'ai',
             'This is old content with KEYWORD',
             False
         ))
 
-        # Insert recent message
-        recent_time = datetime(2025, 11, 14, 12, 0, 0)
+        # Insert recent message (2 days ago)
+        recent_time = datetime.now() - timedelta(days=2)
         cursor.execute("""
             INSERT INTO messages (
                 message_uuid, session_id, timestamp, message_type,
@@ -407,14 +407,14 @@ class TestDateFilteringWithFullContent:
             'recent-msg',
             'session-recent',
             recent_time.isoformat() + 'Z',
-            'assistant',
+            'ai',
             'This is recent content with KEYWORD',
             False
         ))
 
         indexer.conn.commit()
 
-        # Search with date filter (last 7 days from Nov 14)
+        # Search with date filter (last 7 days)
         results = search_engine.search_conversations(
             'KEYWORD',
             days_back=7

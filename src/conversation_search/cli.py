@@ -19,8 +19,8 @@ except PackageNotFoundError:
     __version__ = "dev"
 
 # Configurable Claude command (default: 'claude')
-# Set CC_CONVERSATION_SEARCH_CMD env var to override (e.g., 'clauded' for alias)
-CLAUDE_CMD = os.environ.get('CC_CONVERSATION_SEARCH_CMD', 'claude')
+# Set AGENT_RECALL_CMD env var to override (e.g., 'clauded' for alias)
+CLAUDE_CMD = os.environ.get('AGENT_RECALL_CMD', 'claude')
 
 
 def localize_timestamps(data: Any) -> Any:
@@ -68,34 +68,16 @@ def cmd_init(args):
     days = args.days
     if not quiet:
         print(f"\nIndexing conversations from last {days} days...")
-    files = indexer.scan_conversations(days_back=days)
-
-    if not files:
-        if not quiet:
-            print("  No conversations found")
-        indexer.close()
-        return
+    
+    indexer.index_all(days_back=days, summarize=not args.no_extract)
 
     if not quiet:
-        print(f"  Found {len(files)} conversation files")
-
-    for i, conv_file in enumerate(files, 1):
-        try:
-            if not quiet:
-                print(f"  [{i}/{len(files)}] {conv_file.name}", end="\r")
-            indexer.index_conversation(conv_file, summarize=not args.no_extract)
-        except Exception as e:
-            print(f"\n  Error indexing {conv_file.name}: {e}")
-
-    if quiet:
-        print(f"✓ Indexed {len(files)} conversations")
-    else:
-        print(f"\n\n✓ Initialization complete!")
+        print(f"\n✓ Initialization complete!")
         print(f"  Database: {db_path}")
         print(f"\nNext steps:")
-        print(f"  • Search conversations: cc-conversation-search search '<query>'")
-        print(f"  • List recent: cc-conversation-search list")
-        print(f"  • Re-index: cc-conversation-search index")
+        print(f"  • Search conversations: agent-recall search '<query>'")
+        print(f"  • List recent: agent-recall list")
+        print(f"  • Re-index: agent-recall index")
 
     indexer.close()
 
@@ -105,27 +87,11 @@ def cmd_index(args):
     quiet = args.quiet
     indexer = ConversationIndexer(quiet=quiet)
 
-    files = indexer.scan_conversations(days_back=args.days if not args.all else None)
+    indexer.index_all(
+        days_back=args.days if not args.all else None,
+        summarize=not args.no_extract
+    )
 
-    if not files:
-        if not quiet:
-            print("No conversations to index")
-        return
-
-    if not quiet:
-        print(f"Indexing {len(files)} conversations...")
-
-    for i, conv_file in enumerate(files, 1):
-        try:
-            if not quiet:
-                print(f"[{i}/{len(files)}] {conv_file.name}", end="\r")
-            indexer.index_conversation(conv_file, summarize=not args.no_extract)
-        except Exception as e:
-            if not quiet:
-                print(f"\nError indexing {conv_file.name}: {e}")
-
-    if not quiet:
-        print(f"✓ Indexed {len(files)} conversations")
     indexer.close()
 
 
@@ -136,13 +102,7 @@ def cmd_search(args):
         indexer = ConversationIndexer(quiet=True)
         # Index at least as far back as search range, minimum 30 days
         days_to_index = max(args.days if args.days else 30, 30)
-        files = indexer.scan_conversations(days_back=days_to_index)
-        if files:
-            for conv_file in files:
-                try:
-                    indexer.index_conversation(conv_file, summarize=True)
-                except Exception:
-                    pass  # Silent failures for auto-indexing
+        indexer.index_all(days_back=days_to_index, summarize=True)
         indexer.close()
 
     search = ConversationSearch()
@@ -155,7 +115,8 @@ def cmd_search(args):
             until=getattr(args, 'until', None),
             date=getattr(args, 'date', None),
             limit=args.limit,
-            project_path=args.project
+            project_path=args.project,
+            source=args.source
         )
     except Exception as e:
         print(f"Error: {e}")
@@ -204,13 +165,7 @@ def cmd_context(args):
     # Auto-index recent conversations to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        files = indexer.scan_conversations(days_back=30)
-        if files:
-            for conv_file in files:
-                try:
-                    indexer.index_conversation(conv_file, summarize=True)
-                except Exception:
-                    pass  # Silent failures for auto-indexing
+        indexer.index_all(days_back=30, summarize=True)
         indexer.close()
 
     search = ConversationSearch()
@@ -263,13 +218,7 @@ def cmd_list(args):
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
         days_to_index = max(args.days if args.days else 30, 30)
-        files = indexer.scan_conversations(days_back=days_to_index)
-        if files:
-            for conv_file in files:
-                try:
-                    indexer.index_conversation(conv_file, summarize=True)
-                except Exception:
-                    pass  # Silent failures for auto-indexing
+        indexer.index_all(days_back=days_to_index, summarize=True)
         indexer.close()
 
     search = ConversationSearch()
@@ -279,7 +228,8 @@ def cmd_list(args):
         since=getattr(args, 'since', None),
         until=getattr(args, 'until', None),
         date=getattr(args, 'date', None),
-        limit=args.limit
+        limit=args.limit,
+        source=args.source
     )
 
     if args.json:
@@ -362,7 +312,7 @@ def cmd_resume(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='cc-conversation-search',
+        prog='agent-recall',
         description='Find and resume Claude Code conversations using semantic search'
     )
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
@@ -393,6 +343,7 @@ def main():
     search_parser.add_argument('--until', help='End date (YYYY-MM-DD, yesterday, today)')
     search_parser.add_argument('--date', help='Specific date (YYYY-MM-DD, yesterday, today)')
     search_parser.add_argument('--project', help='Filter by project path')
+    search_parser.add_argument('--source', help='Filter by source (claude, gemini)')
     search_parser.add_argument('--limit', type=int, default=20, help='Max results (default: 20)')
     search_parser.add_argument('--content', action='store_true', help='Show full content')
     search_parser.add_argument('--json', action='store_true', help='Output as JSON')
@@ -414,6 +365,7 @@ def main():
     list_parser.add_argument('--since', help='Start date (YYYY-MM-DD, yesterday, today)')
     list_parser.add_argument('--until', help='End date (YYYY-MM-DD, yesterday, today)')
     list_parser.add_argument('--date', help='Specific date (YYYY-MM-DD, yesterday, today)')
+    list_parser.add_argument('--source', help='Filter by source (claude, gemini)')
     list_parser.add_argument('--limit', type=int, default=20, help='Max results (default: 20)')
     list_parser.add_argument('--json', action='store_true', help='Output as JSON')
     list_parser.add_argument('--no-index', action='store_true', help='Skip auto-indexing (faster but may be stale)')
@@ -440,9 +392,9 @@ def main():
         args.func(args)
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("\nThe cc-conversation-search tool requires initialization.")
-        print("Install: uv tool install cc-conversation-search")
-        print("Initialize: cc-conversation-search init")
+        print("\nThe agent-recall tool requires initialization.")
+        print("Install: uv tool install agent-recall")
+        print("Initialize: agent-recall init")
         sys.exit(1)
     except KeyboardInterrupt:
         print("\n\nInterrupted")

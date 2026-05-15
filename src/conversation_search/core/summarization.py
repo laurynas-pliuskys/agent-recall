@@ -254,43 +254,43 @@ def message_uses_conversation_search(message: Dict) -> bool:
     Returns:
         True if message uses conversation-search, False otherwise
     """
-    # Only assistant messages can use tools
-    if message.get('message_type') != 'assistant':
+    # Only ai messages can use tools
+    if message.get('message_type') != 'ai':
         return False
 
     content = message.get('content', '')
     content_lower = content.lower()
 
-    # Pattern 1: Bash tool + cc-conversation-search command
+    # Pattern 1: Bash tool + agent-recall command
     # This means Claude RAN the command via Bash
-    if '[Tool: Bash]' in content and 'cc-conversation-search' in content:
+    if '[Tool: Bash]' in content and 'agent-recall' in content:
         return True
 
-    # Pattern 2: Direct cc-conversation-search command usage
+    # Pattern 2: Direct agent-recall command usage
     # Multiple patterns to catch various invocation styles
-    if 'cc-conversation-search' in content:
+    if 'agent-recall' in content:
         cmd_patterns = [
-            # Direct subcommand: cc-conversation-search search
-            r'cc-conversation-search\s+(search|list|index|tree|context|resume)',
-            # Flags before subcommand: cc-conversation-search --json search
-            r'cc-conversation-search\s+--\w+\s+(search|list|index|tree|context|resume)',
-            # Version/help flags: cc-conversation-search --help
-            r'cc-conversation-search\s+(--help|--version|-h|-v)',
+            # Direct subcommand: agent-recall search
+            r'agent-recall\s+(search|list|index|tree|context|resume)',
+            # Flags before subcommand: agent-recall --json search
+            r'agent-recall\s+--\w+\s+(search|list|index|tree|context|resume)',
+            # Version/help flags: agent-recall --help
+            r'agent-recall\s+(--help|--version|-h|-v)',
         ]
         for pattern in cmd_patterns:
             if re.search(pattern, content):
                 return True
 
     # Pattern 3: Tool upgrade commands
-    if re.search(r'uv\s+tool\s+upgrade\s+cc-conversation-search', content):
+    if re.search(r'uv\s+tool\s+(upgrade|install)\s+agent-recall', content):
         return True
-    if re.search(r'pip\s+install\s+--upgrade\s+cc-conversation-search', content):
+    if re.search(r'pip\s+install\s+--upgrade\s+agent-recall', content):
         return True
 
     # Pattern 4: Command existence checks
-    if re.search(r'command\s+-v\s+cc-conversation-search', content):
+    if re.search(r'command\s+-v\s+agent-recall', content):
         return True
-    if re.search(r'which\s+cc-conversation-search', content):
+    if re.search(r'which\s+agent-recall', content):
         return True
 
     # Pattern 5: Skill activation markers (actual usage, not discussion)

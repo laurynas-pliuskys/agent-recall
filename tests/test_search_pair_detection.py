@@ -17,12 +17,12 @@ from conversation_search.core.indexer import ConversationIndexer
 class TestMessageUsesConversationSearch:
     """Test detection of messages that use the conversation-search tool."""
 
-    def test_detects_bash_tool_with_cc_conversation_search(self):
-        """Should detect when Claude runs cc-conversation-search via Bash."""
+    def test_detects_bash_tool_with_agent_recall(self):
+        """Should detect when Claude runs agent-recall via Bash."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': '[Tool: Bash]\ncc-conversation-search search "redis" --days 7 --json\n...'
+            'message_type': 'ai',
+            'content': '[Tool: Bash]\nagent-recall search "redis" --days 7 --json\n...'
         }
         assert message_uses_conversation_search(message) is True
 
@@ -30,7 +30,7 @@ class TestMessageUsesConversationSearch:
         """Should detect skill activation markers."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'Let me search for that.\n\nThe "conversation-search" skill is loading\n⎿  Allowed 1 tools for this command'
         }
         assert message_uses_conversation_search(message) is True
@@ -39,7 +39,7 @@ class TestMessageUsesConversationSearch:
         """Should detect alternative skill markers."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'conversation-search skill is running...\nSearching for your query...'
         }
         assert message_uses_conversation_search(message) is True
@@ -48,8 +48,8 @@ class TestMessageUsesConversationSearch:
         """Should NOT detect when Claude is just discussing the tool."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': 'You can use the cc-conversation-search tool to find past conversations. Here is how it works...'
+            'message_type': 'ai',
+            'content': 'You can use the agent-recall tool to find past conversations. Here is how it works...'
         }
         assert message_uses_conversation_search(message) is False
 
@@ -58,15 +58,15 @@ class TestMessageUsesConversationSearch:
         message = {
             'uuid': 'test-uuid',
             'message_type': 'user',
-            'content': 'Run cc-conversation-search for me'
+            'content': 'Run agent-recall for me'
         }
         assert message_uses_conversation_search(message) is False
 
-    def test_ignores_normal_assistant_messages(self):
+    def test_ignores_normal_ai_messages(self):
         """Should not flag normal Claude responses."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'Let me help you implement that feature. [Tool: Read] [Tool: Edit] ...'
         }
         assert message_uses_conversation_search(message) is False
@@ -75,71 +75,71 @@ class TestMessageUsesConversationSearch:
         """Skill markers should be case-insensitive."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'The "Conversation-Search" SKILL IS LOADING'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_flags_before_subcommand(self):
-        """Should detect cc-conversation-search with flags before subcommand."""
+        """Should detect agent-recall with flags before subcommand."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': '[Tool: Bash]\ncc-conversation-search --json search "foo"\n...'
+            'message_type': 'ai',
+            'content': '[Tool: Bash]\nagent-recall --json search "foo"\n...'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_help_flag(self):
-        """Should detect cc-conversation-search --help."""
+        """Should detect agent-recall --help."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': '[Tool: Bash]\ncc-conversation-search --help\n...'
+            'message_type': 'ai',
+            'content': '[Tool: Bash]\nagent-recall --help\n...'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_version_flag(self):
-        """Should detect cc-conversation-search --version."""
+        """Should detect agent-recall --version."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': 'cc-conversation-search -v'
+            'message_type': 'ai',
+            'content': 'agent-recall -v'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_uv_tool_upgrade(self):
-        """Should detect uv tool upgrade cc-conversation-search."""
+        """Should detect uv tool upgrade agent-recall."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': '[Tool: Bash]\nuv tool upgrade cc-conversation-search\n...'
+            'message_type': 'ai',
+            'content': '[Tool: Bash]\nuv tool upgrade agent-recall\n...'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_pip_upgrade(self):
-        """Should detect pip install --upgrade cc-conversation-search."""
+        """Should detect pip install --upgrade agent-recall."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': 'pip install --upgrade cc-conversation-search'
+            'message_type': 'ai',
+            'content': 'pip install --upgrade agent-recall'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_command_existence_check(self):
-        """Should detect command -v cc-conversation-search."""
+        """Should detect command -v agent-recall."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': 'if command -v cc-conversation-search &> /dev/null; then\n    echo "found"\nfi'
+            'message_type': 'ai',
+            'content': 'if command -v agent-recall &> /dev/null; then\n    echo "found"\nfi'
         }
         assert message_uses_conversation_search(message) is True
 
     def test_detects_which_command(self):
-        """Should detect which cc-conversation-search."""
+        """Should detect which agent-recall."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
-            'content': 'which cc-conversation-search'
+            'message_type': 'ai',
+            'content': 'which agent-recall'
         }
         assert message_uses_conversation_search(message) is True
 
@@ -147,7 +147,7 @@ class TestMessageUsesConversationSearch:
         """Should detect quoted skill name with activation verbs."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'The "conversation-search" skill is now activated and running'
         }
         assert message_uses_conversation_search(message) is True
@@ -156,7 +156,7 @@ class TestMessageUsesConversationSearch:
         """Should NOT detect when discussing skill without activation verbs."""
         message = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'The "conversation-search" skill can help you find conversations'
         }
         assert message_uses_conversation_search(message) is False
@@ -166,7 +166,7 @@ class TestMessageUsesConversationSearch:
         # Should detect when close together
         message_close = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'Allowed 1 tools for this command\nconversation-search'
         }
         assert message_uses_conversation_search(message_close) is True
@@ -174,7 +174,7 @@ class TestMessageUsesConversationSearch:
         # Should NOT detect when far apart (>100 chars)
         message_far = {
             'uuid': 'test-uuid',
-            'message_type': 'assistant',
+            'message_type': 'ai',
             'content': 'Allowed 1 tools for this command\n' + ('x' * 150) + 'conversation-search'
         }
         assert message_uses_conversation_search(message_far) is False
@@ -195,8 +195,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
-                'content': '[Tool: Bash]\ncc-conversation-search search "redis"\nFound it in session xyz'
+                'message_type': 'ai',
+                'content': '[Tool: Bash]\nagent-recall search "redis"\nFound it in session xyz'
             },
         ]
 
@@ -219,8 +219,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"\nFound it!'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"\nFound it!'
             },
             {
                 'uuid': 'msg-c',
@@ -231,7 +231,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-d',
                 'parent_uuid': 'msg-c',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me help with Redis caching...'
             },
         ]
@@ -261,8 +261,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"\nFound 3 results'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"\nFound 3 results'
             },
             {
                 'uuid': 'msg-c',
@@ -273,8 +273,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-d',
                 'parent_uuid': 'msg-c',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis last week"\nHere it is!'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis last week"\nHere it is!'
             },
             {
                 'uuid': 'msg-e',
@@ -285,7 +285,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-f',
                 'parent_uuid': 'msg-e',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me help you implement...'
             },
         ]
@@ -312,7 +312,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Sure, I can help',
                 'is_sidechain': False
             },
@@ -326,8 +326,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-d',
                 'parent_uuid': 'msg-c',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "auth"\nFound it',
+                'message_type': 'ai',
+                'content': 'agent-recall search "auth"\nFound it',
                 'is_sidechain': True
             },
             {
@@ -340,7 +340,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-f',
                 'parent_uuid': 'msg-e',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me continue...',
                 'is_sidechain': False
             },
@@ -378,7 +378,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me help with that. [Tool: Read] [Tool: Edit]'
             },
         ]
@@ -394,8 +394,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-a',
                 'parent_uuid': None,  # Root message
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"\nFound it!'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"\nFound it!'
             },
         ]
 
@@ -405,20 +405,20 @@ class TestMarkMetaConversations:
         # Should still mark the search response even without parent
         assert 'msg-a' in meta_uuids
 
-    def test_search_response_with_assistant_parent(self):
+    def test_search_response_with_ai_parent(self):
         """Should walk up and mark entire chain, even if no user message found."""
         messages = [
             {
                 'uuid': 'msg-a',
                 'parent_uuid': None,
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me check something...'
             },
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"\nFound it!'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"\nFound it!'
             },
         ]
 
@@ -442,7 +442,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'msg-b',
                 'parent_uuid': 'msg-a',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me search for that.\n\nThe "conversation-search" skill is loading\n⎿  Allowed 1 tools for this command'
             },
         ]
@@ -464,32 +464,32 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'asst-1',
                 'parent_uuid': 'user-root',
-                'message_type': 'assistant',
-                'content': ''  # Empty assistant message
+                'message_type': 'ai',
+                'content': ''  # Empty ai message
             },
             {
                 'uuid': 'asst-2',
                 'parent_uuid': 'asst-1',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'I\'ll search for the conversations from yesterday.'
             },
             {
                 'uuid': 'skill-loading',
                 'parent_uuid': 'asst-2',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'The "conversation-search" skill is loading'
             },
             {
                 'uuid': 'asst-3',
                 'parent_uuid': 'skill-loading',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'I\'ll help you find yesterday\'s conversations.'
             },
             {
                 'uuid': 'search-msg',
                 'parent_uuid': 'asst-3',
-                'message_type': 'assistant',
-                'content': '[Tool: Bash]\ncc-conversation-search list --date yesterday --json'
+                'message_type': 'ai',
+                'content': '[Tool: Bash]\nagent-recall list --date yesterday --json'
             },
         ]
 
@@ -516,14 +516,14 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'asst-1',
                 'parent_uuid': 'user-root',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me search...'
             },
             {
                 'uuid': 'search-1',
                 'parent_uuid': 'asst-1',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"'
             },
             {
                 'uuid': 'result-1',
@@ -534,8 +534,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'search-2',
                 'parent_uuid': 'result-1',
-                'message_type': 'assistant',
-                'content': 'uv tool upgrade cc-conversation-search'
+                'message_type': 'ai',
+                'content': 'uv tool upgrade agent-recall'
             },
         ]
 
@@ -558,8 +558,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'search-cmd',
                 'parent_uuid': 'user-question',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search list --date yesterday'
+                'message_type': 'ai',
+                'content': 'agent-recall list --date yesterday'
             },
             {
                 'uuid': 'tool-result',
@@ -570,13 +570,13 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'processing',
                 'parent_uuid': 'tool-result',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': ''  # Empty processing message
             },
             {
                 'uuid': 'search-answer',
                 'parent_uuid': 'processing',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Based on yesterday\'s conversations, you worked on: comfygit, redream...'
             },
             {
@@ -588,7 +588,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'real-work',
                 'parent_uuid': 'real-followup',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Let me help with comfygit... [actual work]'
             },
         ]
@@ -617,8 +617,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'search',
                 'parent_uuid': 'user-q',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search list --date last-week'
+                'message_type': 'ai',
+                'content': 'agent-recall list --date last-week'
             },
             {
                 'uuid': 'result',
@@ -629,7 +629,7 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'answer',
                 'parent_uuid': 'result',
-                'message_type': 'assistant',
+                'message_type': 'ai',
                 'content': 'Last week you worked on: project A, project B, project C...'
             },
         ]
@@ -657,8 +657,8 @@ class TestMarkMetaConversations:
             {
                 'uuid': 'search',
                 'parent_uuid': 'user-q',
-                'message_type': 'assistant',
-                'content': 'cc-conversation-search search "redis"'
+                'message_type': 'ai',
+                'content': 'agent-recall search "redis"'
             },
             {
                 'uuid': 'result',

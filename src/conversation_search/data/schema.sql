@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- Metadata
     timestamp TEXT NOT NULL,
-    message_type TEXT NOT NULL CHECK(message_type IN ('user', 'assistant')),
+    message_type TEXT NOT NULL CHECK(message_type IN ('user', 'ai')),
     project_path TEXT,
     conversation_file TEXT,  -- Path to the JSONL file
 
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
     -- Indexing
     indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    source TEXT NOT NULL DEFAULT 'claude',
 
     FOREIGN KEY (parent_uuid) REFERENCES messages(message_uuid)
 );
@@ -82,12 +83,15 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_message_at TEXT,
     message_count INTEGER DEFAULT 0,
     indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    source TEXT NOT NULL DEFAULT 'claude',
 
     FOREIGN KEY (root_message_uuid) REFERENCES messages(message_uuid)
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_project ON conversations(project_path);
 CREATE INDEX IF NOT EXISTS idx_conv_last_message ON conversations(last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source ON messages(source);
+CREATE INDEX IF NOT EXISTS idx_conv_source ON conversations(source);
 
 -- Processing queue for new/updated files
 CREATE TABLE IF NOT EXISTS index_queue (
