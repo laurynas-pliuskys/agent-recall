@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from importlib.resources import files
@@ -77,6 +77,15 @@ class ConversationIndexer:
 
         schema_sql = files('agent_recall.data').joinpath('schema.sql').read_text()
         self.conn.executescript(schema_sql)
+
+    def get_last_indexed_at(self) -> Optional[date]:
+        """Return the date of the most recently indexed conversation, or None if DB is empty."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT MAX(indexed_at) FROM conversations")
+        row = cursor.fetchone()
+        if row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0]).date()
 
     def _get_summarizer_project_hash(self) -> Optional[str]:
         """Get the project hash for summarizer workspace by detection"""
