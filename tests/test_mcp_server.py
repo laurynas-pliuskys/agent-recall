@@ -49,3 +49,68 @@ def test_list_conversations_db_not_found(tmp_path):
         result = list_conversations()
     assert isinstance(result, str)
     assert "agent-recall init" in result
+
+
+from agent_recall.core.indexer import ConversationIndexer
+
+
+@pytest.fixture
+def test_db(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    indexer = ConversationIndexer(db_path=db_path, quiet=True)
+    indexer.conn.execute("""
+        INSERT INTO conversations
+            (session_id, project_path, source, conversation_summary,
+             last_message_at, first_message_at, message_count)
+        VALUES ('sess1', 'home-user-project', 'claude', 'Test conversation',
+                '2026-05-14T10:00:00Z', '2026-05-14T09:00:00Z', 1)
+    """)
+    indexer.conn.execute("""
+        INSERT INTO messages
+            (message_uuid, session_id, timestamp, message_type,
+             project_path, full_content, source)
+        VALUES ('uuid-1', 'sess1', '2026-05-14T10:00:00Z', 'user',
+                'home-user-project', 'Test message about authentication bug', 'claude')
+    """)
+    indexer.conn.commit()
+    indexer.close()
+    return db_path
+
+
+def test_search_returns_fragment_shape(test_db):
+    with patch("agent_recall.mcp_server.DB_PATH", test_db):
+        from agent_recall.mcp_server import search
+        results = search("authentication")
+    assert len(results) == 1
+    r = results[0]
+    assert r["source"] == "claude"
+    assert r["session_id"] == "sess1"
+    assert r["project_path"] == "/home/user/project"
+    assert r["role"] == "user"
+    assert "message_uuid" in r
+    assert "snippet" in r
+    assert "ts" in r
+
+
+def test_search_returns_empty_for_no_match(test_db):
+    with patch("agent_recall.mcp_server.DB_PATH", test_db):
+        from agent_recall.mcp_server import search
+        results = search("xyzzy_no_match")
+    assert results == []
+
+
+def test_list_conversations_returns_resume_hint(test_db):
+    with patch("agent_recall.mcp_server.DB_PATH", test_db):
+        from agent_recall.mcp_server import list_conversations
+        results = list_conversations()
+    assert len(results) == 1
+    assert results[0]["resume_hint"] == "claude --resume sess1"
+    assert results[0]["conversation_summary"] == "Test conversation"
+
+
+def test_get_context_returns_message(test_db):
+    with patch("agent_recall.mcp_server.DB_PATH", test_db):
+        from agent_recall.mcp_server import get_context
+        result = get_context("uuid-1")
+    assert "message" in result
+    assert result["message"]["message_uuid"] == "uuid-1"
