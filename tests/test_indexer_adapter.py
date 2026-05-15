@@ -1,8 +1,8 @@
 import json
 import sqlite3
 from pathlib import Path
-from conversation_search.adapters.claude import ClaudeAdapter
-from conversation_search.core.indexer import ConversationIndexer
+from agent_recall.adapters.claude import ClaudeAdapter
+from agent_recall.core.indexer import ConversationIndexer
 
 
 def _write_claude_jsonl(path: Path, session_id: str) -> None:

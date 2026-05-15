@@ -1,4 +1,4 @@
-"""Core functionality for conversation-search"""
+"""Core functionality for agent-recall"""
 
 from .indexer import ConversationIndexer
 from .search import ConversationSearch

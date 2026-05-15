@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 from pathlib import Path
-from conversation_search.core.indexer import ConversationIndexer
+from agent_recall.core.indexer import ConversationIndexer
 
 
 def test_migration_adds_source_to_fresh_db(tmp_path):

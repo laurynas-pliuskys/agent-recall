@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from conversation_search.core.search import ConversationSearch
+from agent_recall.core.search import ConversationSearch
 
 
 class TestSearchWithDateFilters:

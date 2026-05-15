@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI for conversation-search"""
+"""Unified CLI for agent-recall"""
 
 import argparse
 import json
@@ -10,8 +10,8 @@ from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
-from conversation_search.core.indexer import ConversationIndexer
-from conversation_search.core.search import ConversationSearch, format_timestamp
+from agent_recall.core.indexer import ConversationIndexer
+from agent_recall.core.search import ConversationSearch, format_timestamp
 
 try:
     __version__ = version("agent-recall")
@@ -53,7 +53,7 @@ def cmd_init(args):
         print("Conversation Search - Initializing")
         print("=" * 50)
 
-    db_path = Path.home() / ".conversation-search" / "index.db"
+    db_path = Path.home() / ".agent-recall" / "index.db"
 
     if db_path.exists() and not args.force:
         if not quiet:
@@ -311,6 +311,15 @@ def cmd_resume(args):
 
 
 def main():
+    old_db = Path.home() / ".conversation-search" / "index.db"
+    new_db = Path.home() / ".agent-recall" / "index.db"
+    if old_db.exists() and not new_db.exists():
+        print(
+            "Note: database found at old path ~/.conversation-search/index.db\n"
+            "Move it:        mv ~/.conversation-search/index.db ~/.agent-recall/index.db\n"
+            "Or re-init:     agent-recall init\n"
+        )
+
     parser = argparse.ArgumentParser(
         prog='agent-recall',
         description='Find and resume Claude Code conversations using semantic search'

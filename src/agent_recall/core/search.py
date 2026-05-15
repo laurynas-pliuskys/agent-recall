@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
-from conversation_search.core.summarization import MessageSummarizer
-from conversation_search.core.date_utils import build_date_filter
+from agent_recall.core.summarization import MessageSummarizer
+from agent_recall.core.date_utils import build_date_filter
 
 
 def format_timestamp(iso_timestamp: str, include_date: bool = True, include_seconds: bool = False) -> str:
@@ -43,7 +43,7 @@ def format_timestamp(iso_timestamp: str, include_date: bool = True, include_seco
 
 
 class ConversationSearch:
-    def __init__(self, db_path: str = "~/.conversation-search/index.db"):
+    def __init__(self, db_path: str = "~/.agent-recall/index.db"):
         self.db_path = Path(db_path).expanduser()
         if not self.db_path.exists():
             raise FileNotFoundError(
@@ -589,7 +589,7 @@ def main():
                        help='Show full message content')
     parser.add_argument('--json', action='store_true',
                        help='Output as JSON')
-    parser.add_argument('--db', default='~/.conversation-search/index.db',
+    parser.add_argument('--db', default='~/.agent-recall/index.db',
                        help='Path to SQLite database')
 
     args = parser.parse_args()
@@ -599,7 +599,7 @@ def main():
     try:
         if args.cleanup:
             # Clean up database: mark tool noise and remove summarizer conversations
-            from conversation_search.core.summarization import MessageSummarizer, is_summarizer_conversation
+            from agent_recall.core.summarization import MessageSummarizer, is_summarizer_conversation
 
             print("🧹 Cleaning up database...")
             summarizer = MessageSummarizer(db_path=args.db)

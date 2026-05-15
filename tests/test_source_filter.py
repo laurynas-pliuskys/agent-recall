@@ -1,6 +1,6 @@
 import sqlite3
 from pathlib import Path
-from conversation_search.core.search import ConversationSearch
+from agent_recall.core.search import ConversationSearch
 
 
 def _build_db(db_path: str):

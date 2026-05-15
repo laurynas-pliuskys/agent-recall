@@ -6,8 +6,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
-from conversation_search.core.indexer import ConversationIndexer
-from conversation_search.core.search import ConversationSearch
+from agent_recall.core.indexer import ConversationIndexer
+from agent_recall.core.search import ConversationSearch
 
 
 @pytest.fixture

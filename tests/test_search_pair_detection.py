@@ -10,8 +10,8 @@ import pytest
 from typing import List, Dict, Set
 
 # Import functions we'll implement
-from conversation_search.core.summarization import message_uses_conversation_search
-from conversation_search.core.indexer import ConversationIndexer
+from agent_recall.core.summarization import message_uses_conversation_search
+from agent_recall.core.indexer import ConversationIndexer
 
 
 class TestMessageUsesConversationSearch:

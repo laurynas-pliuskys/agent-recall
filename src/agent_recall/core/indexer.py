@@ -12,10 +12,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from importlib.resources import files
-from conversation_search.adapters.base import BaseAdapter, ConversationMeta, ParsedMessage
-from conversation_search.adapters.claude import ClaudeAdapter
-from conversation_search.adapters.gemini import GeminiAdapter
-from conversation_search.core.summarization import (
+from agent_recall.adapters.base import BaseAdapter, ConversationMeta, ParsedMessage
+from agent_recall.adapters.claude import ClaudeAdapter
+from agent_recall.adapters.gemini import GeminiAdapter
+from agent_recall.core.summarization import (
     MessageSummarizer,
     is_summarizer_conversation,
     message_uses_conversation_search
@@ -25,7 +25,7 @@ from conversation_search.core.summarization import (
 class ConversationIndexer:
     def __init__(
         self,
-        db_path: str = "~/.conversation-search/index.db",
+        db_path: str = "~/.agent-recall/index.db",
         quiet: bool = False,
         adapters=None,
     ):
@@ -75,7 +75,7 @@ class ConversationIndexer:
                 pass  # Column already exists
         self.conn.commit()
 
-        schema_sql = files('conversation_search.data').joinpath('schema.sql').read_text()
+        schema_sql = files('agent_recall.data').joinpath('schema.sql').read_text()
         self.conn.executescript(schema_sql)
 
     def _get_summarizer_project_hash(self) -> Optional[str]:
@@ -602,7 +602,7 @@ def main():
                        help='Index all conversations regardless of age')
     parser.add_argument('--no-extract', action='store_true',
                        help='Skip smart extraction (store only raw content)')
-    parser.add_argument('--db', default='~/.conversation-search/index.db',
+    parser.add_argument('--db', default='~/.agent-recall/index.db',
                        help='Path to SQLite database')
 
     args = parser.parse_args()
