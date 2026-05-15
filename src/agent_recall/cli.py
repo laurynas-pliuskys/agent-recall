@@ -168,20 +168,23 @@ def cmd_context(args):
 
     search = ConversationSearch()
 
-    result = search.get_conversation_context(
-        message_uuid=args.uuid,
-        depth=args.depth
-    )
+    try:
+        result = search.get_conversation_context(
+            message_uuid=args.uuid,
+            depth=args.depth
+        )
+    except ValueError as e:
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"Error: {e}")
+        return
 
     if args.json:
         print(json.dumps(localize_timestamps(result), indent=2))
         return
 
     print(f"Context for message: {args.uuid}\n")
-
-    if 'error' in result:
-        print(f"Error: {result['error']}")
-        return
 
     # Show parents
     if result.get('ancestors'):
@@ -237,7 +240,12 @@ def cmd_list(args):
         print("No conversations found")
         return
 
-    print(f"Recent conversations (last {args.days} days):\n")
+    if args.days is not None:
+        print(f"Recent conversations (last {args.days} days):\n")
+    elif getattr(args, 'since', None) or getattr(args, 'until', None) or getattr(args, 'date', None):
+        print("Recent conversations (filtered by date):\n")
+    else:
+        print("Recent conversations:\n")
 
     for conv in convs:
         timestamp = format_timestamp(conv['last_message_at'])

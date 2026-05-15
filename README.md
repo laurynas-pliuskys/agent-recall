@@ -228,8 +228,8 @@ agent-recall tree SESSION_ID [--json]
 ## Programmatic API
 
 ```python
-from conversation_search.core.search import ConversationSearch
-from conversation_search.core.indexer import ConversationIndexer
+from agent_recall.core.search import ConversationSearch
+from agent_recall.core.indexer import ConversationIndexer
 
 search = ConversationSearch()
 

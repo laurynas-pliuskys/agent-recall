@@ -210,7 +210,7 @@ class ConversationSearch:
         target = cursor.fetchone()
 
         if not target:
-            return {"error": f"Message {message_uuid} not found"}
+            raise ValueError(f"Message {message_uuid} not found")
 
         target_dict = dict(target)
 
@@ -246,7 +246,10 @@ class ConversationSearch:
         cursor.execute("""
             SELECT * FROM conversations WHERE session_id = ?
         """, (target_dict['session_id'],))
-        conversation = dict(cursor.fetchone())
+        conv_row = cursor.fetchone()
+        if conv_row is None:
+            raise ValueError(f"Conversation metadata not found for message {message_uuid}")
+        conversation = dict(conv_row)
 
         return {
             "message": target_dict,
@@ -637,7 +640,7 @@ def main():
 
                 # Read messages from this conversation
                 try:
-                    from indexer import ConversationIndexer
+                    from agent_recall.core.indexer import ConversationIndexer
                     indexer = ConversationIndexer(db_path=args.db)
                     _, messages = indexer.parse_conversation_file(conv_file)
 
@@ -825,7 +828,7 @@ def main():
 
                     print(f"  Processing batch {batch_num}/{total_batches} ({len(batch)} messages)...")
 
-                    summaries = summarizer.summarize_batch(batch)
+                    summaries = summarizer.extract_batch(batch)
                     if summaries:
                         updated = summarizer.update_database(summaries)
                         total_updated += updated
