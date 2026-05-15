@@ -114,3 +114,5 @@ def test_get_context_returns_message(test_db):
         result = get_context("uuid-1")
     assert "message" in result
     assert result["message"]["message_uuid"] == "uuid-1"
+    assert "children" in result
+    assert "ancestors" in result

@@ -55,6 +55,7 @@ def search(
                 "ts": r["timestamp"],
                 "role": r["message_type"],
                 "snippet": r["context_snippet"],
+                "score": None,
                 "message_uuid": r["message_uuid"],
             }
             for r in results
@@ -70,12 +71,12 @@ def get_context(message_uuid: str, window: int = 5):
     if cs is None:
         return "Database not found. Run: agent-recall init"
     try:
-        return cs.get_conversation_context(message_uuid=message_uuid, depth=window)
+        return cs.get_conversation_context(message_uuid=message_uuid, depth=window, include_children=True)
     finally:
         cs.close()
 
 
-@mcp.tool()
+@mcp.tool(name="list")
 def list_conversations(
     source: Optional[str] = None,
     since: Optional[str] = None,

@@ -85,7 +85,11 @@ class ConversationIndexer:
         row = cursor.fetchone()
         if row[0] is None:
             return None
-        return datetime.fromisoformat(row[0]).date()
+        
+        from datetime import timezone
+        dt = datetime.fromisoformat(row[0])
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+        return dt_utc.astimezone().date()
 
     def _get_summarizer_project_hash(self) -> Optional[str]:
         """Get the project hash for summarizer workspace by detection"""
@@ -540,7 +544,7 @@ class ConversationIndexer:
             last_date = self.get_last_indexed_at()
             if last_date is not None:
                 today = datetime.now().date()
-                days_back = (today - last_date).days + 1
+                days_back = max(1, (today - last_date).days + 1)
 
         pairs = self.scan_all(days_back)
         if not self.quiet:
