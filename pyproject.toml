@@ -3,20 +3,10 @@ name = "agent-recall"
 version = "0.1.0"
 description = "Search your past Claude Code, Codex, and Gemini CLI conversations"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = ["mcp>=1.0,<2"]
 authors = [
     {name = "laurynas-pliuskys"}
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
 ]
 
 [project.optional-dependencies]
@@ -25,10 +15,6 @@ dev = ["pytest>=7"]
 [project.scripts]
 agent-recall     = "agent_recall.cli:main"
 agent-recall-mcp = "agent_recall.mcp_server:main"
-
-[project.urls]
-Homepage = "https://github.com/laurynas-pliuskys/agent-recall"
-Issues = "https://github.com/laurynas-pliuskys/agent-recall/issues"
 
 [build-system]
 requires = ["hatchling"]
