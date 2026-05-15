@@ -45,6 +45,15 @@ class MessageSummarizer:
         if not content.strip():
             return True
 
+        # AI messages that are just acknowledging tool use — check before the
+        # length guard so short phrases like "Let me check that." are caught.
+        if msg_type == 'ai' and len(content) < 150:
+            if any(phrase in content.lower() for phrase in [
+                'let me read', 'let me check', 'let me search',
+                "i'll look at", 'looking at', 'checking'
+            ]):
+                return True
+
         # Very short messages that are just tool markers
         if len(content) < 50:
             return False  # These get marked as "too_short" instead
@@ -70,14 +79,6 @@ class MessageSummarizer:
             if len(text_without_tools) > 100:
                 return False
             return True
-
-        # Assistant messages that are just acknowledging tool use
-        if msg_type == 'assistant' and len(content) < 150:
-            if any(phrase in content.lower() for phrase in [
-                'let me read', 'let me check', 'let me search',
-                "i'll look at", 'looking at', 'checking'
-            ]):
-                return True
 
         return False
 
@@ -155,7 +156,10 @@ class MessageSummarizer:
 
         return extractions
 
-    def update_database(self, summaries: List[Dict], method: str = 'smart_extraction'):
+    # Alias used by legacy search.py --summarize path
+    summarize_batch = extract_batch
+
+    def update_database(self, summaries: List[Dict], method: str = 'truncation'):
         """Update database with extracted searchable text"""
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")

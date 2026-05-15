@@ -237,7 +237,10 @@ def cmd_list(args):
         print("No conversations found")
         return
 
-    print(f"Recent conversations (last {args.days} days):\n")
+    if args.days is not None:
+        print(f"Recent conversations (last {args.days} days):\n")
+    else:
+        print("Recent conversations:\n")
 
     for conv in convs:
         timestamp = format_timestamp(conv['last_message_at'])
