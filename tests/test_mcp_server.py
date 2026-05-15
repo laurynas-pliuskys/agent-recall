@@ -2,9 +2,10 @@ from unittest.mock import patch
 import pytest
 
 
-def test_project_path_to_fs_hashed():
+def test_project_path_to_fs_relative():
+    # Adapters decode paths before storing; this just ensures a leading slash.
     from agent_recall.mcp_server import _project_path_to_fs
-    assert _project_path_to_fs("home-user-myproject") == "/home/user/myproject"
+    assert _project_path_to_fs("home/user/myproject") == "/home/user/myproject"
 
 
 def test_project_path_to_fs_already_absolute():
@@ -19,7 +20,13 @@ def test_resume_hint_claude():
 
 def test_resume_hint_gemini():
     from agent_recall.mcp_server import _resume_hint
-    assert _resume_hint("gemini", "abc123") == "gemini --resume abc123"
+    assert _resume_hint("gemini", "abc123") == "gemini --resume"
+
+
+def test_resume_hint_with_project_path():
+    from agent_recall.mcp_server import _resume_hint
+    assert _resume_hint("claude", "abc123", "/home/user/proj") == "cd /home/user/proj && claude --resume abc123"
+    assert _resume_hint("gemini", "abc123", "/home/user/proj") == "cd /home/user/proj && gemini --resume"
 
 
 def test_resume_hint_unknown_source():
@@ -62,7 +69,7 @@ def test_db(tmp_path):
         INSERT INTO conversations
             (session_id, project_path, source, conversation_summary,
              last_message_at, first_message_at, message_count)
-        VALUES ('sess1', 'home-user-project', 'claude', 'Test conversation',
+        VALUES ('sess1', '/home/user/project', 'claude', 'Test conversation',
                 '2026-05-14T10:00:00Z', '2026-05-14T09:00:00Z', 1)
     """)
     indexer.conn.execute("""
@@ -70,7 +77,7 @@ def test_db(tmp_path):
             (message_uuid, session_id, timestamp, message_type,
              project_path, full_content, source)
         VALUES ('uuid-1', 'sess1', '2026-05-14T10:00:00Z', 'user',
-                'home-user-project', 'Test message about authentication bug', 'claude')
+                '/home/user/project', 'Test message about authentication bug', 'claude')
     """)
     indexer.conn.commit()
     indexer.close()
@@ -104,7 +111,7 @@ def test_list_conversations_returns_resume_hint(test_db):
         from agent_recall.mcp_server import list_conversations
         results = list_conversations()
     assert len(results) == 1
-    assert results[0]["resume_hint"] == "claude --resume sess1"
+    assert results[0]["resume_hint"] == "cd /home/user/project && claude --resume sess1"
     assert results[0]["conversation_summary"] == "Test conversation"
 
 

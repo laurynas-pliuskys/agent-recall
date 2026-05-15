@@ -2,7 +2,7 @@
 
 **Search your past Claude Code, Codex, and Gemini CLI conversations.** Local SQLite + FTS5, exposed via MCP, returns ranked fragments so your next agent doesn't blow its context resuming whole sessions.
 
-> Fork of [akatz-ai/agent-recall](https://github.com/akatz-ai/agent-recall) — being extended from a Claude-only resume helper into a multi-CLI fragment-retrieval MCP server. See [Current state](#current-state) for what works today versus what's planned.
+> Fork of [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — extended from a Claude-only resume helper into a multi-CLI fragment-retrieval MCP server. See [Current state](#current-state) for what works today versus what's planned.
 
 ## Why this exists
 
@@ -52,7 +52,7 @@ The two approaches are complementary. You can run both. This project fills the g
 
 ### Tools the MCP server will expose
 
-- **`search(query, source?, date_range?, k=5)`** → ranked fragments: `{source, session_id, project_path, ts, role, snippet, score, message_uuid}`. The default tool — returns the relevant text, not a resume command.
+- **`search(query, source?, date_range?, k=5)`** → ranked fragments: `{source, session_id, project_path, ts, role, snippet, message_uuid}`. The default tool — returns the relevant text, not a resume command.
 - **`get_context(session_id, message_uuid, window=10)`** → surrounding messages for a single hit, when one fragment isn't enough.
 - **`list(date_range?, source?)`** → conversation-level summaries. This is where resume hints live — explicit, opt-in, not the default.
 
@@ -63,31 +63,37 @@ Honest snapshot of where the code is right now:
 - ✅ **Claude Code and Gemini indexing works.** Inherited FTS5 indexing from original fork and added Gemini CLI adapter.
 - ✅ **MCP server is exposed.** Available via `agent-recall-mcp`. Exposes `search`, `get_context`, and `list` via stdio for any MCP client.
 - ✅ **Package and CLI renamed to `agent-recall`.** Fully rebranded from the original fork.
-- ✅ **Claude Code skill works today.** Returns session IDs + resume commands; biased toward "find which session," not fragment retrieval.
+- ✅ **Claude Code skill is MCP-first.** Calls MCP tools directly (CLI as fallback), returns ranked fragments by default, surfaces resume hints only when explicitly asked.
 - 🟡 **Codex adapter not yet built.**
-- ❌ **Fragment-first output not yet wired through the skill.** The CLI already supports it (`--content`), but the skill prompt biases toward session IDs.
 
 If you want to use it today on Claude Code only, the [Quick start](#quick-start) and [Command reference](#command-reference) below describe what works. The rest is roadmap.
 
 ## Quick start
 
-> Until the refactor lands, install from source. There's no PyPI release yet.
-
 ```bash
+# Install from source
 git clone https://github.com/laurynas-pliuskys/agent-recall.git
 cd agent-recall
 pip install -e .
 
-# Initialize the database (indexes the last 7 days of Claude Code conversations)
+# Initialize the database (indexes the last 7 days of conversations)
 agent-recall init
 ```
 
-### Install the Claude Code skill (optional but recommended)
+### Wire up Claude Code (one-time setup)
 
 ```bash
-mkdir -p ~/.claude/skills/conversation-search
-cp skills/conversation-search/* ~/.claude/skills/conversation-search/
+# Install the skill (Claude Code reads it as a slash-command trigger)
+agent-recall install-skill
+
+# Register the MCP server globally
+agent-recall configure-mcp
+
+# For Gemini CLI MCP (optional)
+agent-recall configure-mcp --target gemini
 ```
+
+`install-skill` bundles the skill with the package, so this works the same way after `uv tool install agent-recall` once it's on PyPI.
 
 ### Basic usage
 
@@ -116,17 +122,7 @@ Start the MCP server via stdio:
 agent-recall-mcp
 ```
 
-Or configure it in your MCP client. For Claude Code, add to `.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "agent-recall": {
-      "command": "agent-recall-mcp"
-    }
-  }
-}
-```
+Or configure it automatically with `agent-recall configure-mcp [--target claude|gemini]`.
 
 The server exposes three tools: `search`, `get_context`, `list_conversations`.
 It runs `agent-recall index` automatically on startup to ensure fresh data.
@@ -165,7 +161,7 @@ Ask Claude naturally:
 - *"What did we work on yesterday?"*
 - *"Summarize this week's sessions on the rosemary repotting."*
 
-The skill picks the right CLI command, runs it, and shows you matches with session IDs and resume commands.
+The skill calls the MCP server, returns ranked message fragments by default, and shows resume commands only when you explicitly ask to go back to a session.
 
 ## Command reference
 
@@ -174,7 +170,7 @@ The skill picks the right CLI command, runs it, and shows you matches with sessi
 Initialize the database and perform initial indexing.
 
 ```bash
-agent-recall init [--days 7] [--no-extract] [--force]
+agent-recall init [--days 7] [--force]
 ```
 
 ### `agent-recall index`
@@ -182,7 +178,7 @@ agent-recall init [--days 7] [--no-extract] [--force]
 JIT index conversations (instant, no AI calls). The skill always runs this before `search` for fresh data.
 
 ```bash
-agent-recall index [--days N] [--all] [--no-extract]
+agent-recall index [--days N] [--all]
 ```
 
 ### `agent-recall search`
@@ -249,7 +245,7 @@ convs = search.list_recent_conversations(since="2025-11-10", until="today")
 
 # Re-index
 indexer = ConversationIndexer()
-indexer.index_all(days_back=7)
+indexer.index_new(days_back=7)
 indexer.close()
 ```
 
@@ -260,9 +256,9 @@ agent-recall search "authentication" --json > auth.json
 agent-recall list --days 30 --json | jq '.[] | .conversation_summary'
 ```
 
-## Source-specific notes (planned adapter work)
+## Source-specific adapter notes
 
-For the v1 multi-CLI work, each adapter has its own quirks to handle:
+Claude and Gemini adapters are implemented. Codex is still pending. Known quirks per source:
 
 ### Claude Code
 
@@ -303,15 +299,15 @@ For the v1 multi-CLI work, each adapter has its own quirks to handle:
 2. 🟡 Add `ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter` (~80 LoC each). (Codex still missing)
 3. ✅ Add `source` column to the schema; rebuild FTS5; migration.
 4. ✅ Wrap `ConversationSearch` in an MCP server (stdio transport, `mcp` Python SDK). Tools: `search` (fragment-first), `get_context`, `list`.
-5. ❌ Update the Claude Code skill to call MCP and return fragments by default. Resume hints become opt-in.
-6. ✅ Per-source resume hint helpers in `list` output (`claude --resume`, `codex resume`, `gemini --resume`).
+5. ✅ Update the Claude Code skill to call MCP and return fragments by default. Resume hints are opt-in.
+6. ✅ Per-source resume hint helpers: `cd <proj> && claude --resume <sid>`, `cd <proj> && gemini --resume` (browser picker).
 7. ✅ Rename CLI binary to `agent-recall`.
 
 ### v2 — nice to have
 
 - Filesystem watcher (`watchdog`) for live indexing instead of JIT.
 - Hybrid retrieval: FTS5 + local embeddings via Ollama (`nomic-embed-text`), stored with the `sqlite-vec` extension. Score = `α·BM25 + (1-α)·cosine`.
-- Smart chunking for long assistant messages (~300-token semantic chunks) instead of truncation at 500/200 chars.
+- Smart chunking for long assistant messages (~300-token semantic chunks) rather than storing the full raw message as one FTS document.
 - Tool-call-aware indexing: separate `tool_name` / `tool_args_json` columns so "the Cloudflare Modbus integration" matches tool args.
 - Session-start AI briefing (inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall)): an LLM-generated digest of recent activity injected on `SessionStart`.
 - Optional cross-encoder reranker on top-k.
@@ -322,9 +318,9 @@ For the v1 multi-CLI work, each adapter has its own quirks to handle:
 - Conversation analytics (topics, frequency).
 - Cross-machine sync.
 
-## Architecture today (inherited)
+## Architecture
 
-The Claude-only ancestor's storage layout, which v1 will extend:
+Source files on disk, indexed into a single local database:
 
 ```
 ~/.claude/
@@ -332,26 +328,29 @@ The Claude-only ancestor's storage layout, which v1 will extend:
     └── {project}/
         └── {session}.jsonl
 
-~/.conversation-search/
+~/.gemini/
+└── tmp/
+    └── {project_hash}/
+        └── chats/
+            └── {session}.json
+
+~/.agent-recall/
 └── index.db          # SQLite database with FTS5 over indexed messages
 ```
 
-### Database schema (current)
+### Database schema
 
-- **messages**: individual messages with summaries, tree structure (`parent_uuid`), timestamps.
-- **conversations**: session metadata with conversation summaries.
-- **message_summaries_fts**: FTS5 full-text search index.
-- **index_queue**: processing queue for batch operations.
+- **messages**: individual messages, full content, tree structure (`parent_uuid`), timestamps, `source` column (claude/gemini).
+- **conversations**: session metadata with summaries, per-source.
+- **message_content_fts**: FTS5 virtual table over `full_content`.
 
-v1 added a `source` column to `messages` to discriminate Claude / Codex / Gemini.
+### How it works
 
-### How it works (current)
-
-1. **Indexer**: scans `~/.claude/projects/` for JSONL conversation files, parses tree structure.
-2. **Smart extraction**: hybrid approach — full user content + first 500 / last 200 chars for assistant.
-3. **Meta-conversation filtering**: excludes conversations where Claude used the search tool itself (prevents recursive pollution).
-4. **Search**: FTS5 over extracted content with conversation tree traversal.
-5. **JIT indexing**: skill runs `index` before `search` for fresh data — no API calls, no delays.
+1. **Indexer**: scans `~/.claude/projects/` and `~/.gemini/tmp/` via pluggable adapters, parses tree structure.
+2. **Full content storage**: complete message text is stored and indexed; no truncation at index time.
+3. **Meta-conversation filtering**: excludes conversations where the agent used agent-recall itself (prevents recursive pollution).
+4. **Search**: FTS5 snippet extraction over full content with conversation tree traversal for context expansion.
+5. **JIT indexing**: MCP server and skill both run `index` before `search` for fresh data — no API calls, no delays.
 6. **Local timezone display**: all timestamps converted to the local timezone for readability.
 
 ## Performance
@@ -380,38 +379,30 @@ pytest tests/
 agent-recall/
 ├── src/
 │   └── agent_recall/
-│       ├── cli.py                  # unified CLI
+│       ├── cli.py                  # unified CLI (agent-recall)
+│       ├── mcp_server.py           # stdio MCP server (agent-recall-mcp)
+│       ├── adapters/
+│       │   ├── base.py             # ParsedMessage + BaseAdapter
+│       │   ├── claude.py
+│       │   └── gemini.py
 │       ├── core/
-│       │   ├── indexer.py
-│       │   ├── search.py
+│       │   ├── indexer.py          # drives the adapter list
+│       │   ├── search.py           # source filter + fragment-first output
 │       │   ├── date_utils.py
 │       │   └── summarization.py
+│       ├── skill/
+│       │   ├── SKILL.md            # bundled Claude Code skill (install-skill copies this)
+│       │   └── REFERENCE.md
 │       └── data/
 │           └── schema.sql
-├── skills/
-│   └── conversation-search/
-│       ├── SKILL.md                # Claude Code skill
-│       └── REFERENCE.md
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # pytest on push/PR
+├── scripts/
+│   └── bump-version.sh
 ├── tests/
 ├── pyproject.toml
 └── README.md
-```
-
-After the v1 refactor:
-
-```
-src/agent_recall/
-├── adapters/
-│   ├── base.py        # ParsedMessage + BaseAdapter
-│   ├── claude.py
-│   ├── codex.py
-│   └── gemini.py
-├── core/
-│   ├── indexer.py     # drives the adapter list
-│   ├── search.py      # source filter + fragment-first output
-│   └── ...
-├── mcp_server.py      # stdio MCP using `mcp` SDK
-└── cli.py
 ```
 
 ## Troubleshooting
@@ -427,15 +418,9 @@ agent-recall init
 - Verify `~/.claude/projects/` exists and contains JSONL files.
 - Use Claude Code to create some conversations first.
 
-**Skip extraction, use raw content only**
-
-```bash
-agent-recall init --no-extract
-```
-
 **Skill not activating in Claude Code**
 
-- Check skill location: `ls ~/.claude/skills/conversation-search/SKILL.md`
+- Check skill location: `ls ~/.claude/skills/agent-recall/SKILL.md` (run `agent-recall install-skill` if missing)
 - Verify YAML frontmatter format.
 - Restart Claude Code.
 - Try an explicit trigger: *"Search my conversations for X."*
@@ -456,7 +441,7 @@ There's an unrelated project by [mnardit](https://github.com/mnardit) also named
 
 ## Acknowledgements
 
-Forked from [akatz-ai/agent-recall](https://github.com/akatz-ai/agent-recall) — the original Claude-only ancestor and the source of the JIT-indexing-into-FTS5 pattern. The planned session-start AI briefing is inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall).
+Forked from [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — the original Claude-only ancestor and the source of the JIT-indexing-into-FTS5 pattern. The planned session-start AI briefing is inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall).
 
 ## License
 

@@ -4,9 +4,11 @@
 import argparse
 import json
 import os
+import shlex
 import sys
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
+from importlib.resources import files as _pkg_files
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -69,7 +71,7 @@ def cmd_init(args):
     if not quiet:
         print(f"\nIndexing conversations from last {days} days...")
     
-    indexer.index_new(summarize=not args.no_extract)
+    indexer.index_new()
 
     if not quiet:
         print(f"\n✓ Initialization complete!")
@@ -87,10 +89,7 @@ def cmd_index(args):
     quiet = args.quiet
     indexer = ConversationIndexer(quiet=quiet)
 
-    indexer.index_new(
-        days_back=args.days if not args.all else None,
-        summarize=not args.no_extract
-    )
+    indexer.index_new(days_back=args.days if not args.all else None)
 
     indexer.close()
 
@@ -100,7 +99,7 @@ def cmd_search(args):
     # Auto-index before searching to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -134,10 +133,8 @@ def cmd_search(args):
         icon = "👤" if result['message_type'] == 'user' else "🤖"
         timestamp = format_timestamp(result['timestamp'])
 
-        # Convert project_path hash to actual path
-        project_dir = result['project_path'].replace('-', '/')
-        if not project_dir.startswith('/'):
-            project_dir = f"/{project_dir}"
+        project_path = result['project_path']
+        project_dir = project_path if project_path.startswith('/') else f"/{project_path}"
 
         print(f"{icon}  {result['conversation_summary']}")
         print(f"   Session: {result['session_id']}")
@@ -163,7 +160,7 @@ def cmd_context(args):
     # Auto-index recent conversations to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -218,7 +215,7 @@ def cmd_list(args):
     # Auto-index before listing to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -306,13 +303,91 @@ def cmd_resume(args):
     session_id = result['session_id']
     project_path = result['project_path']
 
-    # Convert project_path hash back to actual path
-    project_dir = project_path.replace('-', '/')
-    if not project_dir.startswith('/'):
-        project_dir = f"/{project_dir}"
+    project_dir = project_path if project_path.startswith('/') else f"/{project_path}"
 
-    print(f"cd {project_dir}")
+    print(f"cd {shlex.quote(project_dir)}")
     print(f"{CLAUDE_CMD} --resume {session_id}")
+
+
+def cmd_install_skill(args):
+    """Copy the bundled skill into the target CLI's skills directory."""
+    target = args.target
+
+    if target == "claude":
+        dest = Path.home() / ".claude" / "skills" / "agent-recall"
+    elif target == "gemini":
+        print("Gemini CLI skill format is not yet implemented.")
+        print("For Gemini, use:  agent-recall configure-mcp --target gemini")
+        sys.exit(0)
+    elif target == "codex":
+        print("Codex skill format is not yet implemented.")
+        sys.exit(0)
+    else:
+        print(f"Unknown target: {target}. Choose from: claude, gemini, codex")
+        sys.exit(1)
+
+    if dest.exists() and not args.force:
+        print(f"Skill already installed at {dest}")
+        print("Use --force to overwrite.")
+        return
+
+    dest.mkdir(parents=True, exist_ok=True)
+    skill_pkg = _pkg_files("agent_recall") / "skill"
+    for fname in ("SKILL.md", "REFERENCE.md"):
+        content = (skill_pkg / fname).read_bytes()
+        (dest / fname).write_bytes(content)
+        print(f"  Installed {fname}")
+
+    print(f"\nSkill installed at {dest}")
+    if target == "claude":
+        print("Restart Claude Code (or open a new session) to activate it.")
+
+
+def cmd_configure_mcp(args):
+    """Write the agent-recall MCP server entry into the target CLI's settings."""
+    target = args.target
+
+    if target == "claude":
+        if args.project:
+            settings_path = Path.cwd() / ".claude" / "settings.json"
+        else:
+            settings_path = Path.home() / ".claude" / "settings.json"
+    elif target == "gemini":
+        if args.project:
+            settings_path = Path.cwd() / ".gemini" / "settings.json"
+        else:
+            settings_path = Path.home() / ".gemini" / "settings.json"
+    else:
+        print(f"Unknown target: {target}. Choose from: claude, gemini")
+        sys.exit(1)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                content = f.read().strip()
+            settings = json.loads(content) if content else {}
+        except json.JSONDecodeError:
+            print(f"Error: {settings_path} contains invalid JSON.")
+            sys.exit(1)
+    else:
+        settings = {}
+
+    settings.setdefault("mcpServers", {})
+    if "agent-recall" in settings["mcpServers"] and not args.force:
+        print(f"agent-recall MCP server already configured in {settings_path}")
+        print("Use --force to overwrite.")
+        return
+
+    settings["mcpServers"]["agent-recall"] = {"command": "agent-recall-mcp"}
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+    print(f"MCP server configured in {settings_path}")
+    print("Restart your CLI session for the change to take effect.")
 
 
 def main():
@@ -336,7 +411,6 @@ def main():
     # init command
     init_parser = subparsers.add_parser('init', help='Initialize database and index')
     init_parser.add_argument('--days', type=int, default=7, help='Days of history to index (default: 7)')
-    init_parser.add_argument('--no-extract', action='store_true', help='Skip smart extraction (store only raw content)')
     init_parser.add_argument('--force', action='store_true', help='Reinitialize existing database')
     init_parser.add_argument('--quiet', action='store_true', help='Minimal output')
     init_parser.set_defaults(func=cmd_init)
@@ -345,7 +419,6 @@ def main():
     index_parser = subparsers.add_parser('index', help='Index conversations (JIT - runs before search)')
     index_parser.add_argument('--days', type=int, default=1, help='Days back to index (default: 1)')
     index_parser.add_argument('--all', action='store_true', help='Index all conversations')
-    index_parser.add_argument('--no-extract', action='store_true', help='Skip smart extraction')
     index_parser.add_argument('--quiet', action='store_true', help='Minimal output')
     index_parser.set_defaults(func=cmd_index)
 
@@ -395,6 +468,32 @@ def main():
     resume_parser = subparsers.add_parser('resume', help='Get session resumption commands')
     resume_parser.add_argument('uuid', help='Message UUID')
     resume_parser.set_defaults(func=cmd_resume)
+
+    # install-skill command
+    install_skill_parser = subparsers.add_parser(
+        'install-skill', help='Install the agent-recall skill into a CLI tools directory'
+    )
+    install_skill_parser.add_argument(
+        '--target', default='claude', choices=['claude', 'gemini', 'codex'],
+        help='Target CLI (default: claude)'
+    )
+    install_skill_parser.add_argument('--force', action='store_true', help='Overwrite existing skill')
+    install_skill_parser.set_defaults(func=cmd_install_skill)
+
+    # configure-mcp command
+    configure_mcp_parser = subparsers.add_parser(
+        'configure-mcp', help='Add agent-recall MCP server to a CLI settings file'
+    )
+    configure_mcp_parser.add_argument(
+        '--target', default='claude', choices=['claude', 'gemini'],
+        help='Target CLI (default: claude)'
+    )
+    configure_mcp_parser.add_argument(
+        '--project', action='store_true',
+        help='Write to project-level .claude/settings.json instead of global'
+    )
+    configure_mcp_parser.add_argument('--force', action='store_true', help='Overwrite existing entry')
+    configure_mcp_parser.set_defaults(func=cmd_configure_mcp)
 
     args = parser.parse_args()
 

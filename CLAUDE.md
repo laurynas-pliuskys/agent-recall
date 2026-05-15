@@ -15,11 +15,6 @@
 
 This updates `pyproject.toml` (the single source of truth).
 
-## Pre-push Hook
-
-A git pre-push hook validates that the version in pyproject.toml doesn't already exist on PyPI.
-This prevents CI failures from trying to upload duplicate versions.
-
 ## Breaking Changes
 
 Only bump minor version (0.1 → 0.2) for breaking changes. Update SKILL.md minimum version if needed.

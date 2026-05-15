@@ -1,3 +1,4 @@
+import shlex
 import sys
 from typing import Optional
 
@@ -19,15 +20,16 @@ def _get_search() -> Optional[ConversationSearch]:
 
 
 def _project_path_to_fs(stored_path: str) -> str:
-    path = stored_path.replace("-", "/")
-    return path if path.startswith("/") else f"/{path}"
+    return stored_path if stored_path.startswith("/") else f"/{stored_path}"
 
 
-def _resume_hint(source: str, session_id: str) -> Optional[str]:
+def _resume_hint(source: str, session_id: str, project_path: str = "") -> Optional[str]:
+    cd = f"cd {shlex.quote(project_path)} && " if project_path else ""
     if source == "claude":
-        return f"claude --resume {session_id}"
+        return f"{cd}claude --resume {session_id}"
     if source == "gemini":
-        return f"gemini --resume {session_id}"
+        # Gemini doesn't support resume by ID via CLI; user picks from browser
+        return f"{cd}gemini --resume"
     return None
 
 
@@ -55,7 +57,6 @@ def search(
                 "ts": r["timestamp"],
                 "role": r["message_type"],
                 "snippet": r["context_snippet"],
-                "score": None,
                 "message_uuid": r["message_uuid"],
             }
             for r in results
@@ -96,8 +97,9 @@ def list_conversations(
         results = []
         for conv in convs:
             entry = dict(conv)
+            fs_path = _project_path_to_fs(conv.get("project_path") or "")
             entry["resume_hint"] = _resume_hint(
-                conv.get("source", "claude"), conv["session_id"]
+                conv.get("source", "claude"), conv["session_id"], fs_path
             )
             results.append(entry)
         return results
@@ -108,10 +110,15 @@ def list_conversations(
 def main():
     try:
         indexer = ConversationIndexer(db_path=DB_PATH, quiet=True)
-        indexer.index_new()
-        indexer.close()
     except Exception as e:
-        print(f"Warning: startup indexing failed: {e}", file=sys.stderr)
+        print(f"Warning: could not open database, searches will fail: {e}", file=sys.stderr)
+    else:
+        try:
+            indexer.index_new()
+        except Exception as e:
+            print(f"Warning: startup indexing failed, existing index still usable: {e}", file=sys.stderr)
+        finally:
+            indexer.close()
 
     mcp.run()
 
