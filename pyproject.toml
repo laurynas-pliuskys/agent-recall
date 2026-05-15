@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Search your past Claude Code, Codex, and Gemini CLI conversations"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = ["mcp>=1.0"]
 authors = [
     {name = "laurynas-pliuskys"}
 ]
@@ -20,7 +20,8 @@ classifiers = [
 ]
 
 [project.scripts]
-agent-recall = "agent_recall.cli:main"
+agent-recall     = "agent_recall.cli:main"
+agent-recall-mcp = "agent_recall.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/laurynas-pliuskys/agent-recall"
