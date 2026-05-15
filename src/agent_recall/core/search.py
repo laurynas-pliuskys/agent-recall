@@ -116,9 +116,11 @@ class ConversationSearch:
             params = []
         else:
             # Sanitize query for FTS5
-            fts_query = query
-            if not any(op in query for op in [' AND ', ' OR ', ' NOT ', '"']):
-                terms = query.split()
+            # Replace hyphens with spaces: FTS5 parses "word-foo*" as "word" AND
+            # column-filter "foo:*", throwing "no such column: foo" for hyphenated input.
+            fts_query = query.replace('-', ' ')
+            if not any(op in fts_query for op in [' AND ', ' OR ', ' NOT ', '"']):
+                terms = fts_query.split()
                 if len(terms) == 1:
                     fts_query = f'{terms[0]}*'
                 else:

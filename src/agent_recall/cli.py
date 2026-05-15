@@ -5,6 +5,8 @@ import argparse
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
@@ -344,50 +346,53 @@ def cmd_install_skill(args):
 
 
 def cmd_configure_mcp(args):
-    """Write the agent-recall MCP server entry into the target CLI's settings."""
+    """Register the agent-recall MCP server with the target CLI."""
     target = args.target
+    binary = shutil.which("agent-recall-mcp") or str(Path.home() / ".local" / "bin" / "agent-recall-mcp")
 
     if target == "claude":
-        if args.project:
-            settings_path = Path.cwd() / ".claude" / "settings.json"
-        else:
-            settings_path = Path.home() / ".claude" / "settings.json"
+        # Claude Code stores MCP registrations in ~/.claude.json via `claude mcp add`.
+        # Writing to settings.json's mcpServers key does NOT work — Claude Code ignores it.
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            print("Error: 'claude' binary not found. Is Claude Code installed?")
+            sys.exit(1)
+        scope = "project" if args.project else "user"
+        cmd = [claude_bin, "mcp", "add", "--scope", scope]
+        if args.force:
+            cmd.append("--force")
+        cmd += ["agent-recall", binary]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Error: {result.stderr.strip() or result.stdout.strip()}")
+            sys.exit(1)
+        print(result.stdout.strip() or f"MCP server registered via `claude mcp add` (scope: {scope})")
+        print("Restart Claude Code (Reload Window) for the change to take effect.")
+
     elif target == "gemini":
-        if args.project:
-            settings_path = Path.cwd() / ".gemini" / "settings.json"
+        # Gemini CLI reads mcpServers from its settings.json.
+        settings_path = (Path.cwd() if args.project else Path.home()) / ".gemini" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text().strip() or "{}")
+            except json.JSONDecodeError:
+                print(f"Error: {settings_path} contains invalid JSON.")
+                sys.exit(1)
         else:
-            settings_path = Path.home() / ".gemini" / "settings.json"
+            settings = {}
+        settings.setdefault("mcpServers", {})
+        if "agent-recall" in settings["mcpServers"] and not args.force:
+            print(f"agent-recall already configured in {settings_path}. Use --force to overwrite.")
+            return
+        settings["mcpServers"]["agent-recall"] = {"command": binary}
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+        print(f"MCP server configured in {settings_path}")
+        print("Restart Gemini CLI for the change to take effect.")
+
     else:
         print(f"Unknown target: {target}. Choose from: claude, gemini")
         sys.exit(1)
-
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if settings_path.exists():
-        try:
-            with open(settings_path) as f:
-                content = f.read().strip()
-            settings = json.loads(content) if content else {}
-        except json.JSONDecodeError:
-            print(f"Error: {settings_path} contains invalid JSON.")
-            sys.exit(1)
-    else:
-        settings = {}
-
-    settings.setdefault("mcpServers", {})
-    if "agent-recall" in settings["mcpServers"] and not args.force:
-        print(f"agent-recall MCP server already configured in {settings_path}")
-        print("Use --force to overwrite.")
-        return
-
-    settings["mcpServers"]["agent-recall"] = {"command": "agent-recall-mcp"}
-
-    with open(settings_path, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-
-    print(f"MCP server configured in {settings_path}")
-    print("Restart your CLI session for the change to take effect.")
 
 
 def main():

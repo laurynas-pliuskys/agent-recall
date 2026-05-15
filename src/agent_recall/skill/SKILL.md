@@ -84,13 +84,17 @@ agent-recall search "terms" --json
 
 ## Presenting Results
 
-**Return fragments by default** — show what was found, without resume commands:
+**Always synthesize first** — answer the user's actual question in 2–4 sentences based on what the fragments contain. Do not just list citations; the user wants to know what happened, not where to look.
+
+Then show the supporting fragments — omit session/message UUIDs (not useful to the user):
 
 ```
 **[2025-11-13 22:50]** claude · /home/user/projects/myproject
-> "We need to fix the authentication bug in the login flow..."
-  session: abc-123-session-id · message: def-456-uuid
+> "We need to fix the authentication bug in the login flow — the token expiry
+>  check was missing from the refresh handler. Fixed by adding a 401 guard..."
 ```
+
+If a fragment is too short to answer the user's question, call `get_context` on it before presenting, to pull the surrounding messages.
 
 For temporal / list results, group by project and summarize topics covered.
 
