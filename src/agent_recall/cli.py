@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shlex
 import sys
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
@@ -304,7 +305,7 @@ def cmd_resume(args):
 
     project_dir = project_path if project_path.startswith('/') else f"/{project_path}"
 
-    print(f"cd {project_dir}")
+    print(f"cd {shlex.quote(project_dir)}")
     print(f"{CLAUDE_CMD} --resume {session_id}")
 
 
@@ -365,7 +366,8 @@ def cmd_configure_mcp(args):
     if settings_path.exists():
         try:
             with open(settings_path) as f:
-                settings = json.load(f)
+                content = f.read().strip()
+            settings = json.loads(content) if content else {}
         except json.JSONDecodeError:
             print(f"Error: {settings_path} contains invalid JSON.")
             sys.exit(1)

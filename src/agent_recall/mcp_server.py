@@ -1,3 +1,4 @@
+import shlex
 import sys
 from typing import Optional
 
@@ -23,7 +24,7 @@ def _project_path_to_fs(stored_path: str) -> str:
 
 
 def _resume_hint(source: str, session_id: str, project_path: str = "") -> Optional[str]:
-    cd = f"cd {project_path} && " if project_path else ""
+    cd = f"cd {shlex.quote(project_path)} && " if project_path else ""
     if source == "claude":
         return f"{cd}claude --resume {session_id}"
     if source == "gemini":
