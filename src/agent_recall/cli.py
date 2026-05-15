@@ -69,7 +69,7 @@ def cmd_init(args):
     if not quiet:
         print(f"\nIndexing conversations from last {days} days...")
     
-    indexer.index_all(days_back=days, summarize=not args.no_extract)
+    indexer.index_new(summarize=not args.no_extract)
 
     if not quiet:
         print(f"\n✓ Initialization complete!")
@@ -87,7 +87,7 @@ def cmd_index(args):
     quiet = args.quiet
     indexer = ConversationIndexer(quiet=quiet)
 
-    indexer.index_all(
+    indexer.index_new(
         days_back=args.days if not args.all else None,
         summarize=not args.no_extract
     )
@@ -100,9 +100,7 @@ def cmd_search(args):
     # Auto-index before searching to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        # Index at least as far back as search range, minimum 30 days
-        days_to_index = max(args.days if args.days else 30, 30)
-        indexer.index_all(days_back=days_to_index, summarize=True)
+        indexer.index_new(summarize=True)
         indexer.close()
 
     search = ConversationSearch()
@@ -165,7 +163,7 @@ def cmd_context(args):
     # Auto-index recent conversations to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_all(days_back=30, summarize=True)
+        indexer.index_new(summarize=True)
         indexer.close()
 
     search = ConversationSearch()
@@ -217,8 +215,7 @@ def cmd_list(args):
     # Auto-index before listing to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        days_to_index = max(args.days if args.days else 30, 30)
-        indexer.index_all(days_back=days_to_index, summarize=True)
+        indexer.index_new(summarize=True)
         indexer.close()
 
     search = ConversationSearch()

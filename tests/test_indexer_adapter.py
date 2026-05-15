@@ -43,7 +43,7 @@ def test_indexer_uses_adapter_parse(tmp_path, monkeypatch):
         quiet=True,
         adapters=[ClaudeAdapter()],
     )
-    indexer.index_all(days_back=None)
+    indexer.index_new(days_back=None)
     indexer.close()
 
     conn = sqlite3.connect(str(db_path))
@@ -72,7 +72,7 @@ def test_indexer_stores_source_in_conversations(tmp_path, monkeypatch):
         quiet=True,
         adapters=[ClaudeAdapter()],
     )
-    indexer.index_all(days_back=None)
+    indexer.index_new(days_back=None)
     indexer.close()
 
     conn = sqlite3.connect(str(db_path))

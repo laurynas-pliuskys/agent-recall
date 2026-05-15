@@ -114,54 +114,6 @@ class ConversationIndexer:
 
         return None
 
-    def scan_conversations(self, days_back: Optional[int] = 1) -> List[Path]:
-        """
-        Scan ~/.claude/projects for conversation files
-
-        Args:
-            days_back: Only index conversations from the last N days (None = all)
-
-        Returns:
-            List of paths to JSONL files
-        """
-        projects_dir = Path.home() / ".claude" / "projects"
-        if not projects_dir.exists():
-            if not self.quiet:
-                print(f"Projects directory not found: {projects_dir}")
-            return []
-
-        cutoff_time = None
-        if days_back is not None:
-            cutoff_time = datetime.now() - timedelta(days=days_back)
-
-        # Get summarizer hash
-        summarizer_hash = self._get_summarizer_project_hash()
-
-        conversation_files = []
-
-        for project_dir in projects_dir.iterdir():
-            if not project_dir.is_dir():
-                continue
-
-            # Skip summarizer project
-            if summarizer_hash and project_dir.name == summarizer_hash:
-                continue
-
-            for conv_file in project_dir.glob("*.jsonl"):
-                # Skip agent files
-                if conv_file.stem.startswith("agent-"):
-                    continue
-
-                # Check modification time
-                if cutoff_time:
-                    mtime = datetime.fromtimestamp(conv_file.stat().st_mtime)
-                    if mtime < cutoff_time:
-                        continue
-
-                conversation_files.append(conv_file)
-
-        return sorted(conversation_files, key=lambda p: p.stat().st_mtime, reverse=True)
-
     def scan_all(self, days_back):
         """Return (file_path, adapter) pairs from all registered adapters."""
         pairs = []
@@ -576,8 +528,20 @@ class ConversationIndexer:
                 print(f"  Error during indexing, rolled back: {e}")
             raise
 
-    def index_all(self, days_back: Optional[int] = 1, summarize: bool = True):
-        """Index all conversations from the last N days"""
+    def index_new(self, days_back: Optional[int] = None, summarize: bool = True):
+        """Index new/changed conversations since the last run.
+
+        days_back=None triggers auto-detection:
+        - Empty DB → scan all history
+        - Has data → scan from the date of last indexed conversation (+1 day buffer)
+        Pass days_back explicitly to override.
+        """
+        if days_back is None:
+            last_date = self.get_last_indexed_at()
+            if last_date is not None:
+                today = datetime.now().date()
+                days_back = (today - last_date).days + 1
+
         pairs = self.scan_all(days_back)
         if not self.quiet:
             print(f"Found {len(pairs)} conversation files to index")
@@ -621,7 +585,7 @@ def main():
 
     indexer = ConversationIndexer(db_path=args.db)
     try:
-        indexer.index_all(days_back=days_back, summarize=extract)
+        indexer.index_new(days_back=days_back, summarize=extract)
     finally:
         indexer.close()
 
