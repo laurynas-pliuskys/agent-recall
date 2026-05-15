@@ -57,10 +57,10 @@ def test_is_tool_noise_does_not_flag_user_messages():
     assert summarizer.is_tool_noise(msg) is False
 
 
-def test_summarize_batch_is_callable():
-    """summarize_batch must exist; it is referenced by search.py --summarize path."""
+def test_extract_batch_is_callable():
+    """extract_batch must exist; it is referenced by search.py --summarize path."""
     summarizer = MessageSummarizer()
     messages = [{"uuid": "x", "message_type": "user", "content": "hello " * 20}]
-    result = summarizer.summarize_batch(messages)
+    result = summarizer.extract_batch(messages)
     assert isinstance(result, list)
     assert len(result) == 1

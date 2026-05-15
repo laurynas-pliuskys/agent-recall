@@ -20,12 +20,11 @@ def db_orphaned_message(tmp_path):
 
 
 def test_get_conversation_context_orphaned_message(db_orphaned_message):
-    """get_conversation_context must return an error dict, not crash, when the
+    """get_conversation_context must raise a ValueError when the
     conversation metadata row is missing for an otherwise valid message UUID."""
     search = ConversationSearch(db_path=db_orphaned_message)
     try:
-        result = search.get_conversation_context("orphan-uuid")
+        with pytest.raises(ValueError, match="Conversation metadata not found"):
+            search.get_conversation_context("orphan-uuid")
     finally:
         search.close()
-
-    assert "error" in result

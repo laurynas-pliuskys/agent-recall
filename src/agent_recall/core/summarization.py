@@ -156,9 +156,6 @@ class MessageSummarizer:
 
         return extractions
 
-    # Alias used by legacy search.py --summarize path
-    summarize_batch = extract_batch
-
     def update_database(self, summaries: List[Dict], method: str = 'truncation'):
         """Update database with extracted searchable text"""
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)

@@ -210,7 +210,7 @@ class ConversationSearch:
         target = cursor.fetchone()
 
         if not target:
-            return {"error": f"Message {message_uuid} not found"}
+            raise ValueError(f"Message {message_uuid} not found")
 
         target_dict = dict(target)
 
@@ -248,7 +248,7 @@ class ConversationSearch:
         """, (target_dict['session_id'],))
         conv_row = cursor.fetchone()
         if conv_row is None:
-            return {"error": f"Conversation metadata not found for message {message_uuid}"}
+            raise ValueError(f"Conversation metadata not found for message {message_uuid}")
         conversation = dict(conv_row)
 
         return {
@@ -828,7 +828,7 @@ def main():
 
                     print(f"  Processing batch {batch_num}/{total_batches} ({len(batch)} messages)...")
 
-                    summaries = summarizer.summarize_batch(batch)
+                    summaries = summarizer.extract_batch(batch)
                     if summaries:
                         updated = summarizer.update_database(summaries)
                         total_updated += updated

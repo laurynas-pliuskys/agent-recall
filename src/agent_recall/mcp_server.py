@@ -72,6 +72,8 @@ def get_context(message_uuid: str, window: int = 5):
         return "Database not found. Run: agent-recall init"
     try:
         return cs.get_conversation_context(message_uuid=message_uuid, depth=window, include_children=True)
+    except ValueError as e:
+        return str(e)
     finally:
         cs.close()
 
