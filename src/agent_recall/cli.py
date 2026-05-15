@@ -7,6 +7,7 @@ import os
 import sys
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
+from importlib.resources import files as _pkg_files
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -315,6 +316,86 @@ def cmd_resume(args):
     print(f"{CLAUDE_CMD} --resume {session_id}")
 
 
+def cmd_install_skill(args):
+    """Copy the bundled skill into the target CLI's skills directory."""
+    target = args.target
+
+    if target == "claude":
+        dest = Path.home() / ".claude" / "skills" / "agent-recall"
+    elif target == "gemini":
+        print("Gemini CLI skill format is not yet implemented.")
+        print("For Gemini, use:  agent-recall configure-mcp --target gemini")
+        sys.exit(0)
+    elif target == "codex":
+        print("Codex skill format is not yet implemented.")
+        sys.exit(0)
+    else:
+        print(f"Unknown target: {target}. Choose from: claude, gemini, codex")
+        sys.exit(1)
+
+    if dest.exists() and not args.force:
+        print(f"Skill already installed at {dest}")
+        print("Use --force to overwrite.")
+        return
+
+    dest.mkdir(parents=True, exist_ok=True)
+    skill_pkg = _pkg_files("agent_recall") / "skill"
+    for fname in ("SKILL.md", "REFERENCE.md"):
+        content = (skill_pkg / fname).read_bytes()
+        (dest / fname).write_bytes(content)
+        print(f"  Installed {fname}")
+
+    print(f"\nSkill installed at {dest}")
+    if target == "claude":
+        print("Restart Claude Code (or open a new session) to activate it.")
+
+
+def cmd_configure_mcp(args):
+    """Write the agent-recall MCP server entry into the target CLI's settings."""
+    target = args.target
+
+    if target == "claude":
+        if args.project:
+            settings_path = Path.cwd() / ".claude" / "settings.json"
+        else:
+            settings_path = Path.home() / ".claude" / "settings.json"
+    elif target == "gemini":
+        if args.project:
+            settings_path = Path.cwd() / ".gemini" / "settings.json"
+        else:
+            settings_path = Path.home() / ".gemini" / "settings.json"
+    else:
+        print(f"Unknown target: {target}. Choose from: claude, gemini")
+        sys.exit(1)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Error: {settings_path} contains invalid JSON.")
+            sys.exit(1)
+    else:
+        settings = {}
+
+    settings.setdefault("mcpServers", {})
+    if "agent-recall" in settings["mcpServers"] and not args.force:
+        print(f"agent-recall MCP server already configured in {settings_path}")
+        print("Use --force to overwrite.")
+        return
+
+    settings["mcpServers"]["agent-recall"] = {"command": "agent-recall-mcp"}
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+
+    print(f"MCP server configured in {settings_path}")
+    print("Restart your CLI session for the change to take effect.")
+
+
 def main():
     old_db = Path.home() / ".conversation-search" / "index.db"
     new_db = Path.home() / ".agent-recall" / "index.db"
@@ -395,6 +476,32 @@ def main():
     resume_parser = subparsers.add_parser('resume', help='Get session resumption commands')
     resume_parser.add_argument('uuid', help='Message UUID')
     resume_parser.set_defaults(func=cmd_resume)
+
+    # install-skill command
+    install_skill_parser = subparsers.add_parser(
+        'install-skill', help='Install the agent-recall skill into a CLI tools directory'
+    )
+    install_skill_parser.add_argument(
+        '--target', default='claude', choices=['claude', 'gemini', 'codex'],
+        help='Target CLI (default: claude)'
+    )
+    install_skill_parser.add_argument('--force', action='store_true', help='Overwrite existing skill')
+    install_skill_parser.set_defaults(func=cmd_install_skill)
+
+    # configure-mcp command
+    configure_mcp_parser = subparsers.add_parser(
+        'configure-mcp', help='Add agent-recall MCP server to a CLI settings file'
+    )
+    configure_mcp_parser.add_argument(
+        '--target', default='claude', choices=['claude', 'gemini'],
+        help='Target CLI (default: claude)'
+    )
+    configure_mcp_parser.add_argument(
+        '--project', action='store_true',
+        help='Write to project-level .claude/settings.json instead of global'
+    )
+    configure_mcp_parser.add_argument('--force', action='store_true', help='Overwrite existing entry')
+    configure_mcp_parser.set_defaults(func=cmd_configure_mcp)
 
     args = parser.parse_args()
 

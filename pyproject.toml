@@ -19,6 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 agent-recall     = "agent_recall.cli:main"
 agent-recall-mcp = "agent_recall.mcp_server:main"

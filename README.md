@@ -71,20 +71,29 @@ If you want to use it today on Claude Code only, the [Quick start](#quick-start)
 ## Quick start
 
 ```bash
+# Install from source (PyPI release coming soon)
 git clone https://github.com/laurynas-pliuskys/agent-recall.git
 cd agent-recall
 pip install -e .
 
-# Initialize the database (indexes the last 7 days of Claude Code conversations)
+# Initialize the database (indexes the last 7 days of conversations)
 agent-recall init
 ```
 
-### Install the Claude Code skill (optional but recommended)
+### Wire up Claude Code (one-time setup)
 
 ```bash
-mkdir -p ~/.claude/skills/agent-recall
-cp skill-template/agent-recall/* ~/.claude/skills/agent-recall/
+# Install the skill (Claude Code reads it as a slash-command trigger)
+agent-recall install-skill
+
+# Register the MCP server globally
+agent-recall configure-mcp
+
+# For Gemini CLI MCP (optional)
+agent-recall configure-mcp --target gemini
 ```
+
+`install-skill` bundles the skill with the package, so this works the same way after `uv tool install agent-recall` once it's on PyPI.
 
 ### Basic usage
 
@@ -113,17 +122,7 @@ Start the MCP server via stdio:
 agent-recall-mcp
 ```
 
-Or configure it in your MCP client. For Claude Code, add to `.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "agent-recall": {
-      "command": "agent-recall-mcp"
-    }
-  }
-}
-```
+Or configure it automatically with `agent-recall configure-mcp [--target claude|gemini]`.
 
 The server exposes three tools: `search`, `get_context`, `list_conversations`.
 It runs `agent-recall index` automatically on startup to ensure fresh data.
@@ -388,12 +387,15 @@ agent-recall/
 │       │   ├── search.py           # source filter + fragment-first output
 │       │   ├── date_utils.py
 │       │   └── summarization.py
+│       ├── skill/
+│       │   ├── SKILL.md            # bundled Claude Code skill (install-skill copies this)
+│       │   └── REFERENCE.md
 │       └── data/
 │           └── schema.sql
-├── skill-template/
-│   └── agent-recall/
-│       ├── SKILL.md                # copy to ~/.claude/skills/agent-recall/
-│       └── REFERENCE.md
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                  # pytest on push/PR
+│       └── publish.yml             # PyPI publish on version tag
 ├── scripts/
 │   └── bump-version.sh
 ├── tests/
@@ -422,7 +424,7 @@ agent-recall init --no-extract
 
 **Skill not activating in Claude Code**
 
-- Check skill location: `ls ~/.claude/skills/agent-recall/SKILL.md`
+- Check skill location: `ls ~/.claude/skills/agent-recall/SKILL.md` (run `agent-recall install-skill` if missing)
 - Verify YAML frontmatter format.
 - Restart Claude Code.
 - Try an explicit trigger: *"Search my conversations for X."*
