@@ -108,6 +108,55 @@ agent-recall search "query" --days 30
 agent-recall resume <MESSAGE_UUID>
 ```
 
+### MCP server (for Codex, Cursor, and other MCP clients)
+
+Start the MCP server via stdio:
+
+```bash
+agent-recall-mcp
+```
+
+Or configure it in your MCP client. For Claude Code, add to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "agent-recall": {
+      "command": "agent-recall-mcp"
+    }
+  }
+}
+```
+
+The server exposes three tools: `search`, `get_context`, `list_conversations`.
+It runs `agent-recall index` automatically on startup to ensure fresh data.
+
+### SessionStart hook (optional, belt-and-suspenders)
+
+To index at the start of every Claude Code conversation (before the MCP server
+is ready), add a `SessionStart` hook to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agent-recall index --quiet"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Indexing is incremental — it only processes new content since the last run,
+so this adds only a few seconds on each session start.
+
 ### From inside Claude Code (with the skill installed)
 
 Ask Claude naturally:
