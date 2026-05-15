@@ -86,7 +86,8 @@ agent-recall init
 # Install the skill (Claude Code reads it as a slash-command trigger)
 agent-recall install-skill
 
-# Register the MCP server globally
+# Register the MCP server globally (requires the `claude` binary on PATH)
+# Writes to ~/.claude.json via `claude mcp add` — NOT settings.json
 agent-recall configure-mcp
 
 # For Gemini CLI MCP (optional)
@@ -94,6 +95,8 @@ agent-recall configure-mcp --target gemini
 ```
 
 `install-skill` bundles the skill with the package, so this works the same way after `uv tool install agent-recall` once it's on PyPI.
+
+> **Note:** After registering, do a full **Reload Window** in VS Code (not just opening a new conversation) for Claude Code to pick up the new MCP server.
 
 ### Basic usage
 

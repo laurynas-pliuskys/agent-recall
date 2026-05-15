@@ -47,7 +47,8 @@ def search(
         return "Database not found. Run: agent-recall init"
     try:
         results = cs.search_conversations(
-            query=query, source=source, since=since, until=until, limit=k
+            query=query, source=source, since=since, until=until, limit=k,
+            snippet_tokens=300
         )
         return [
             {
