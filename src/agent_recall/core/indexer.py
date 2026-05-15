@@ -359,7 +359,7 @@ class ConversationIndexer:
 
         return meta_uuids
 
-    def index_conversation(self, file_path: Path, summarize: bool = True, adapter=None):
+    def index_conversation(self, file_path: Path, adapter=None):
         """
         Index a single conversation file with batch summarization.
         REVIEW: Decoupling parsing into adapters significantly improves maintainability
@@ -532,7 +532,7 @@ class ConversationIndexer:
                 print(f"  Error during indexing, rolled back: {e}")
             raise
 
-    def index_new(self, days_back: Optional[int] = None, summarize: bool = True):
+    def index_new(self, days_back: Optional[int] = None):
         """Index new/changed conversations since the last run.
 
         days_back=None triggers auto-detection:
@@ -554,7 +554,7 @@ class ConversationIndexer:
             if not self.quiet:
                 print(f"\n[{i}/{len(pairs)}]")
             try:
-                self.index_conversation(file_path, summarize=summarize, adapter=adapter)
+                self.index_conversation(file_path, adapter=adapter)
             except Exception as e:
                 if not self.quiet:
                     print(f"  Error indexing {file_path}: {e}")

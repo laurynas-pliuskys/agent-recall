@@ -2,9 +2,10 @@ from unittest.mock import patch
 import pytest
 
 
-def test_project_path_to_fs_hashed():
+def test_project_path_to_fs_relative():
+    # Adapters decode paths before storing; this just ensures a leading slash.
     from agent_recall.mcp_server import _project_path_to_fs
-    assert _project_path_to_fs("home-user-myproject") == "/home/user/myproject"
+    assert _project_path_to_fs("home/user/myproject") == "/home/user/myproject"
 
 
 def test_project_path_to_fs_already_absolute():
@@ -68,7 +69,7 @@ def test_db(tmp_path):
         INSERT INTO conversations
             (session_id, project_path, source, conversation_summary,
              last_message_at, first_message_at, message_count)
-        VALUES ('sess1', 'home-user-project', 'claude', 'Test conversation',
+        VALUES ('sess1', '/home/user/project', 'claude', 'Test conversation',
                 '2026-05-14T10:00:00Z', '2026-05-14T09:00:00Z', 1)
     """)
     indexer.conn.execute("""
@@ -76,7 +77,7 @@ def test_db(tmp_path):
             (message_uuid, session_id, timestamp, message_type,
              project_path, full_content, source)
         VALUES ('uuid-1', 'sess1', '2026-05-14T10:00:00Z', 'user',
-                'home-user-project', 'Test message about authentication bug', 'claude')
+                '/home/user/project', 'Test message about authentication bug', 'claude')
     """)
     indexer.conn.commit()
     indexer.close()

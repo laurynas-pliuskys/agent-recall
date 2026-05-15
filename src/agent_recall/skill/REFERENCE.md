@@ -113,7 +113,6 @@ Returns ranked fragments matching the query.
     "ts": "2025-11-13T10:30:00",
     "role": "user",
     "snippet": "We need to fix the authentication bug...",
-    "score": null,
     "message_uuid": "def-456"
   }
 ]
@@ -223,6 +222,6 @@ pip install -e .
 ```
 
 **Skill not activating in Claude Code:**
-- Check: `ls ~/.claude/skills/conversation-search/SKILL.md`
+- Check: `ls ~/.claude/skills/agent-recall/SKILL.md`
 - Verify YAML frontmatter is intact
 - Restart Claude Code, or trigger explicitly: *"Search my conversations for X"*

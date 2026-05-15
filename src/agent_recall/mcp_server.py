@@ -19,8 +19,7 @@ def _get_search() -> Optional[ConversationSearch]:
 
 
 def _project_path_to_fs(stored_path: str) -> str:
-    path = stored_path.replace("-", "/")
-    return path if path.startswith("/") else f"/{path}"
+    return stored_path if stored_path.startswith("/") else f"/{stored_path}"
 
 
 def _resume_hint(source: str, session_id: str, project_path: str = "") -> Optional[str]:
@@ -57,7 +56,6 @@ def search(
                 "ts": r["timestamp"],
                 "role": r["message_type"],
                 "snippet": r["context_snippet"],
-                "score": None,
                 "message_uuid": r["message_uuid"],
             }
             for r in results
@@ -111,10 +109,15 @@ def list_conversations(
 def main():
     try:
         indexer = ConversationIndexer(db_path=DB_PATH, quiet=True)
-        indexer.index_new()
-        indexer.close()
     except Exception as e:
-        print(f"Warning: startup indexing failed: {e}", file=sys.stderr)
+        print(f"Warning: could not open database, searches will fail: {e}", file=sys.stderr)
+    else:
+        try:
+            indexer.index_new()
+        except Exception as e:
+            print(f"Warning: startup indexing failed, existing index still usable: {e}", file=sys.stderr)
+        finally:
+            indexer.close()
 
     mcp.run()
 

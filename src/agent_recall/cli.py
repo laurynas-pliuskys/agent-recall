@@ -70,7 +70,7 @@ def cmd_init(args):
     if not quiet:
         print(f"\nIndexing conversations from last {days} days...")
     
-    indexer.index_new(summarize=not args.no_extract)
+    indexer.index_new()
 
     if not quiet:
         print(f"\n✓ Initialization complete!")
@@ -88,10 +88,7 @@ def cmd_index(args):
     quiet = args.quiet
     indexer = ConversationIndexer(quiet=quiet)
 
-    indexer.index_new(
-        days_back=args.days if not args.all else None,
-        summarize=not args.no_extract
-    )
+    indexer.index_new(days_back=args.days if not args.all else None)
 
     indexer.close()
 
@@ -101,7 +98,7 @@ def cmd_search(args):
     # Auto-index before searching to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -135,10 +132,8 @@ def cmd_search(args):
         icon = "👤" if result['message_type'] == 'user' else "🤖"
         timestamp = format_timestamp(result['timestamp'])
 
-        # Convert project_path hash to actual path
-        project_dir = result['project_path'].replace('-', '/')
-        if not project_dir.startswith('/'):
-            project_dir = f"/{project_dir}"
+        project_path = result['project_path']
+        project_dir = project_path if project_path.startswith('/') else f"/{project_path}"
 
         print(f"{icon}  {result['conversation_summary']}")
         print(f"   Session: {result['session_id']}")
@@ -164,7 +159,7 @@ def cmd_context(args):
     # Auto-index recent conversations to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -219,7 +214,7 @@ def cmd_list(args):
     # Auto-index before listing to ensure fresh data
     if not getattr(args, 'no_index', False):
         indexer = ConversationIndexer(quiet=True)
-        indexer.index_new(summarize=True)
+        indexer.index_new()
         indexer.close()
 
     search = ConversationSearch()
@@ -307,10 +302,7 @@ def cmd_resume(args):
     session_id = result['session_id']
     project_path = result['project_path']
 
-    # Convert project_path hash back to actual path
-    project_dir = project_path.replace('-', '/')
-    if not project_dir.startswith('/'):
-        project_dir = f"/{project_dir}"
+    project_dir = project_path if project_path.startswith('/') else f"/{project_path}"
 
     print(f"cd {project_dir}")
     print(f"{CLAUDE_CMD} --resume {session_id}")
@@ -417,7 +409,6 @@ def main():
     # init command
     init_parser = subparsers.add_parser('init', help='Initialize database and index')
     init_parser.add_argument('--days', type=int, default=7, help='Days of history to index (default: 7)')
-    init_parser.add_argument('--no-extract', action='store_true', help='Skip smart extraction (store only raw content)')
     init_parser.add_argument('--force', action='store_true', help='Reinitialize existing database')
     init_parser.add_argument('--quiet', action='store_true', help='Minimal output')
     init_parser.set_defaults(func=cmd_init)
@@ -426,7 +417,6 @@ def main():
     index_parser = subparsers.add_parser('index', help='Index conversations (JIT - runs before search)')
     index_parser.add_argument('--days', type=int, default=1, help='Days back to index (default: 1)')
     index_parser.add_argument('--all', action='store_true', help='Index all conversations')
-    index_parser.add_argument('--no-extract', action='store_true', help='Skip smart extraction')
     index_parser.add_argument('--quiet', action='store_true', help='Minimal output')
     index_parser.set_defaults(func=cmd_index)
 

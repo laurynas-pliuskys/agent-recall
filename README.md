@@ -245,7 +245,7 @@ convs = search.list_recent_conversations(since="2025-11-10", until="today")
 
 # Re-index
 indexer = ConversationIndexer()
-indexer.index_all(days_back=7)
+indexer.index_new(days_back=7)
 indexer.close()
 ```
 
@@ -394,8 +394,7 @@ agent-recall/
 │           └── schema.sql
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                  # pytest on push/PR
-│       └── publish.yml             # PyPI publish on version tag
+│       └── ci.yml                  # pytest on push/PR
 ├── scripts/
 │   └── bump-version.sh
 ├── tests/
