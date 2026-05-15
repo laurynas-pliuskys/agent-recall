@@ -19,7 +19,13 @@ def test_resume_hint_claude():
 
 def test_resume_hint_gemini():
     from agent_recall.mcp_server import _resume_hint
-    assert _resume_hint("gemini", "abc123") == "gemini --resume abc123"
+    assert _resume_hint("gemini", "abc123") == "gemini --resume"
+
+
+def test_resume_hint_with_project_path():
+    from agent_recall.mcp_server import _resume_hint
+    assert _resume_hint("claude", "abc123", "/home/user/proj") == "cd /home/user/proj && claude --resume abc123"
+    assert _resume_hint("gemini", "abc123", "/home/user/proj") == "cd /home/user/proj && gemini --resume"
 
 
 def test_resume_hint_unknown_source():
@@ -104,7 +110,7 @@ def test_list_conversations_returns_resume_hint(test_db):
         from agent_recall.mcp_server import list_conversations
         results = list_conversations()
     assert len(results) == 1
-    assert results[0]["resume_hint"] == "claude --resume sess1"
+    assert results[0]["resume_hint"] == "cd /home/user/project && claude --resume sess1"
     assert results[0]["conversation_summary"] == "Test conversation"
 
 

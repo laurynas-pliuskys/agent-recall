@@ -23,11 +23,13 @@ def _project_path_to_fs(stored_path: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
-def _resume_hint(source: str, session_id: str) -> Optional[str]:
+def _resume_hint(source: str, session_id: str, project_path: str = "") -> Optional[str]:
+    cd = f"cd {project_path} && " if project_path else ""
     if source == "claude":
-        return f"claude --resume {session_id}"
+        return f"{cd}claude --resume {session_id}"
     if source == "gemini":
-        return f"gemini --resume {session_id}"
+        # Gemini doesn't support resume by ID via CLI; user picks from browser
+        return f"{cd}gemini --resume"
     return None
 
 
@@ -96,8 +98,9 @@ def list_conversations(
         results = []
         for conv in convs:
             entry = dict(conv)
+            fs_path = _project_path_to_fs(conv.get("project_path") or "")
             entry["resume_hint"] = _resume_hint(
-                conv.get("source", "claude"), conv["session_id"]
+                conv.get("source", "claude"), conv["session_id"], fs_path
             )
             results.append(entry)
         return results
