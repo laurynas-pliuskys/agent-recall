@@ -1,5 +1,5 @@
 ---
-name: conversation-search
+name: agent-recall
 description: Find and resume Claude Code conversations by searching topics or filtering by date. Returns session IDs and project paths for easy resumption via 'claude --resume'. Use when user asks "find that conversation about X", "what did we discuss", "what did we work on yesterday", "summarize today's work", "show this week's conversations", "recent projects we accomplished", or wants to locate past work by topic, date, or time period (yesterday, today, last week, specific dates).
 allowed-tools: Bash, TodoWrite, mcp__agent_recall__search, mcp__agent_recall__list, mcp__agent_recall__get_context
 ---
