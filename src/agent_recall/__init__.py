@@ -1,0 +1,1 @@
+"""agent-recall - Search across Claude Code and Gemini CLI conversation history"""

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from conversation_search.adapters.gemini import GeminiAdapter
+from agent_recall.adapters.gemini import GeminiAdapter
 
 
 def test_parse_basic_conversation(tmp_path):

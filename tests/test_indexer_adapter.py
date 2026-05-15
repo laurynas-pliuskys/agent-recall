@@ -1,8 +1,8 @@
 import json
 import sqlite3
 from pathlib import Path
-from conversation_search.adapters.claude import ClaudeAdapter
-from conversation_search.core.indexer import ConversationIndexer
+from agent_recall.adapters.claude import ClaudeAdapter
+from agent_recall.core.indexer import ConversationIndexer
 
 
 def _write_claude_jsonl(path: Path, session_id: str) -> None:
@@ -43,7 +43,7 @@ def test_indexer_uses_adapter_parse(tmp_path, monkeypatch):
         quiet=True,
         adapters=[ClaudeAdapter()],
     )
-    indexer.index_all(days_back=None)
+    indexer.index_new(days_back=None)
     indexer.close()
 
     conn = sqlite3.connect(str(db_path))
@@ -72,7 +72,7 @@ def test_indexer_stores_source_in_conversations(tmp_path, monkeypatch):
         quiet=True,
         adapters=[ClaudeAdapter()],
     )
-    indexer.index_all(days_back=None)
+    indexer.index_new(days_back=None)
     indexer.close()
 
     conn = sqlite3.connect(str(db_path))

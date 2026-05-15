@@ -1,4 +1,4 @@
-from conversation_search.adapters.base import ParsedMessage, ConversationMeta, BaseAdapter
+from agent_recall.adapters.base import ParsedMessage, ConversationMeta, BaseAdapter
 
 def test_parsed_message_defaults():
     msg = ParsedMessage(

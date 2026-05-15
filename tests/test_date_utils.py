@@ -3,7 +3,7 @@
 
 import pytest
 from datetime import datetime, timedelta, time
-from conversation_search.core.date_utils import parse_date, build_date_filter
+from agent_recall.core.date_utils import parse_date, build_date_filter
 
 
 class TestParseDate:

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from conversation_search.adapters.base import BaseAdapter, ConversationMeta, ParsedMessage
+from agent_recall.adapters.base import BaseAdapter, ConversationMeta, ParsedMessage
 
 logger = logging.getLogger(__name__)
 

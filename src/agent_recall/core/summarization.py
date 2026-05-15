@@ -15,7 +15,7 @@ from typing import List, Dict, Optional, Tuple
 class MessageSummarizer:
     """Handles smart hybrid extraction without AI summarization"""
 
-    def __init__(self, db_path: str = "~/.conversation-search/index.db"):
+    def __init__(self, db_path: str = "~/.agent-recall/index.db"):
         self.db_path = Path(db_path).expanduser()
 
     def is_tool_noise(self, message: Dict) -> bool:

@@ -1,7 +1,7 @@
 import json
 import tempfile
 from pathlib import Path
-from conversation_search.adapters.claude import ClaudeAdapter
+from agent_recall.adapters.claude import ClaudeAdapter
 
 
 def _write_jsonl(path: Path, lines: list) -> None:
