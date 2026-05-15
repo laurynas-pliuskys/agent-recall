@@ -2,7 +2,7 @@
 
 **Search your past Claude Code, Codex, and Gemini CLI conversations.** Local SQLite + FTS5, exposed via MCP, returns ranked fragments so your next agent doesn't blow its context resuming whole sessions.
 
-> Fork of [akatz-ai/agent-recall](https://github.com/akatz-ai/agent-recall) — being extended from a Claude-only resume helper into a multi-CLI fragment-retrieval MCP server. See [Current state](#current-state) for what works today versus what's planned.
+> Fork of [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — extended from a Claude-only resume helper into a multi-CLI fragment-retrieval MCP server. See [Current state](#current-state) for what works today versus what's planned.
 
 ## Why this exists
 
@@ -52,7 +52,7 @@ The two approaches are complementary. You can run both. This project fills the g
 
 ### Tools the MCP server will expose
 
-- **`search(query, source?, date_range?, k=5)`** → ranked fragments: `{source, session_id, project_path, ts, role, snippet, score, message_uuid}`. The default tool — returns the relevant text, not a resume command.
+- **`search(query, source?, date_range?, k=5)`** → ranked fragments: `{source, session_id, project_path, ts, role, snippet, message_uuid}`. The default tool — returns the relevant text, not a resume command.
 - **`get_context(session_id, message_uuid, window=10)`** → surrounding messages for a single hit, when one fragment isn't enough.
 - **`list(date_range?, source?)`** → conversation-level summaries. This is where resume hints live — explicit, opt-in, not the default.
 
@@ -71,7 +71,7 @@ If you want to use it today on Claude Code only, the [Quick start](#quick-start)
 ## Quick start
 
 ```bash
-# Install from source (PyPI release coming soon)
+# Install from source
 git clone https://github.com/laurynas-pliuskys/agent-recall.git
 cd agent-recall
 pip install -e .
@@ -170,7 +170,7 @@ The skill calls the MCP server, returns ranked message fragments by default, and
 Initialize the database and perform initial indexing.
 
 ```bash
-agent-recall init [--days 7] [--no-extract] [--force]
+agent-recall init [--days 7] [--force]
 ```
 
 ### `agent-recall index`
@@ -178,7 +178,7 @@ agent-recall init [--days 7] [--no-extract] [--force]
 JIT index conversations (instant, no AI calls). The skill always runs this before `search` for fresh data.
 
 ```bash
-agent-recall index [--days N] [--all] [--no-extract]
+agent-recall index [--days N] [--all]
 ```
 
 ### `agent-recall search`
@@ -256,9 +256,9 @@ agent-recall search "authentication" --json > auth.json
 agent-recall list --days 30 --json | jq '.[] | .conversation_summary'
 ```
 
-## Source-specific notes (planned adapter work)
+## Source-specific adapter notes
 
-For the v1 multi-CLI work, each adapter has its own quirks to handle:
+Claude and Gemini adapters are implemented. Codex is still pending. Known quirks per source:
 
 ### Claude Code
 
@@ -307,7 +307,7 @@ For the v1 multi-CLI work, each adapter has its own quirks to handle:
 
 - Filesystem watcher (`watchdog`) for live indexing instead of JIT.
 - Hybrid retrieval: FTS5 + local embeddings via Ollama (`nomic-embed-text`), stored with the `sqlite-vec` extension. Score = `α·BM25 + (1-α)·cosine`.
-- Smart chunking for long assistant messages (~300-token semantic chunks) instead of truncation at 500/200 chars.
+- Smart chunking for long assistant messages (~300-token semantic chunks) rather than storing the full raw message as one FTS document.
 - Tool-call-aware indexing: separate `tool_name` / `tool_args_json` columns so "the Cloudflare Modbus integration" matches tool args.
 - Session-start AI briefing (inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall)): an LLM-generated digest of recent activity injected on `SessionStart`.
 - Optional cross-encoder reranker on top-k.
@@ -318,9 +318,9 @@ For the v1 multi-CLI work, each adapter has its own quirks to handle:
 - Conversation analytics (topics, frequency).
 - Cross-machine sync.
 
-## Architecture today (inherited)
+## Architecture
 
-The Claude-only ancestor's storage layout, which v1 will extend:
+Source files on disk, indexed into a single local database:
 
 ```
 ~/.claude/
@@ -328,26 +328,29 @@ The Claude-only ancestor's storage layout, which v1 will extend:
     └── {project}/
         └── {session}.jsonl
 
-~/.conversation-search/
+~/.gemini/
+└── tmp/
+    └── {project_hash}/
+        └── chats/
+            └── {session}.json
+
+~/.agent-recall/
 └── index.db          # SQLite database with FTS5 over indexed messages
 ```
 
-### Database schema (current)
+### Database schema
 
-- **messages**: individual messages with summaries, tree structure (`parent_uuid`), timestamps.
-- **conversations**: session metadata with conversation summaries.
-- **message_summaries_fts**: FTS5 full-text search index.
-- **index_queue**: processing queue for batch operations.
+- **messages**: individual messages, full content, tree structure (`parent_uuid`), timestamps, `source` column (claude/gemini).
+- **conversations**: session metadata with summaries, per-source.
+- **message_content_fts**: FTS5 virtual table over `full_content`.
 
-v1 added a `source` column to `messages` to discriminate Claude / Codex / Gemini.
+### How it works
 
-### How it works (current)
-
-1. **Indexer**: scans `~/.claude/projects/` for JSONL conversation files, parses tree structure.
-2. **Smart extraction**: hybrid approach — full user content + first 500 / last 200 chars for assistant.
-3. **Meta-conversation filtering**: excludes conversations where Claude used the search tool itself (prevents recursive pollution).
-4. **Search**: FTS5 over extracted content with conversation tree traversal.
-5. **JIT indexing**: skill runs `index` before `search` for fresh data — no API calls, no delays.
+1. **Indexer**: scans `~/.claude/projects/` and `~/.gemini/tmp/` via pluggable adapters, parses tree structure.
+2. **Full content storage**: complete message text is stored and indexed; no truncation at index time.
+3. **Meta-conversation filtering**: excludes conversations where the agent used agent-recall itself (prevents recursive pollution).
+4. **Search**: FTS5 snippet extraction over full content with conversation tree traversal for context expansion.
+5. **JIT indexing**: MCP server and skill both run `index` before `search` for fresh data — no API calls, no delays.
 6. **Local timezone display**: all timestamps converted to the local timezone for readability.
 
 ## Performance
@@ -415,12 +418,6 @@ agent-recall init
 - Verify `~/.claude/projects/` exists and contains JSONL files.
 - Use Claude Code to create some conversations first.
 
-**Skip extraction, use raw content only**
-
-```bash
-agent-recall init --no-extract
-```
-
 **Skill not activating in Claude Code**
 
 - Check skill location: `ls ~/.claude/skills/agent-recall/SKILL.md` (run `agent-recall install-skill` if missing)
@@ -444,7 +441,7 @@ There's an unrelated project by [mnardit](https://github.com/mnardit) also named
 
 ## Acknowledgements
 
-Forked from [akatz-ai/agent-recall](https://github.com/akatz-ai/agent-recall) — the original Claude-only ancestor and the source of the JIT-indexing-into-FTS5 pattern. The planned session-start AI briefing is inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall).
+Forked from [akatz-ai/cc-conversation-search](https://github.com/akatz-ai/cc-conversation-search) — the original Claude-only ancestor and the source of the JIT-indexing-into-FTS5 pattern. The planned session-start AI briefing is inspired by [mnardit/agent-recall](https://github.com/mnardit/agent-recall).
 
 ## License
 
