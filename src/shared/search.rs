@@ -1174,8 +1174,8 @@ mod tests {
                 MessageType::User,
                 "world",
                 1,
-                "claude-conversation-search-mcp",
-                "/mnt/bcachefs/@home/user/GIT/claude-conversation-search-mcp",
+                "agent-recall",
+                "/mnt/bcachefs/@home/user/GIT/agent-recall",
             ),
         ];
 

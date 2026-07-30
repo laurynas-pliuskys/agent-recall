@@ -81,8 +81,8 @@ Test changes before committing. No need to install - use the built binary direct
 
 ```bash
 cargo build --release
-./target/release/claude-conversation-search session <session_id>
-./target/release/claude-conversation-search search "query"
+./target/release/agent-recall session <session_id>
+./target/release/agent-recall search "query"
 ```
 
 ## Pre-commit Checklist

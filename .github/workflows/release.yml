@@ -19,13 +19,13 @@ jobs:
       - name: Create tarball
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          git archive --format=tar --prefix=claude-conversation-search-${VERSION}/ HEAD | xz -c > claude-conversation-search-${VERSION}.tar.xz
+          git archive --format=tar --prefix=agent-recall-${VERSION}/ HEAD | xz -c > agent-recall-${VERSION}.tar.xz
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            claude-conversation-search-*.tar.xz
+            agent-recall-*.tar.xz
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -38,16 +38,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: claude-conversation-search-linux-x86_64
+            artifact_name: agent-recall-linux-x86_64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact_name: claude-conversation-search-linux-aarch64
+            artifact_name: agent-recall-linux-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: claude-conversation-search-windows-x86_64.exe
+            artifact_name: agent-recall-windows-x86_64.exe
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: claude-conversation-search-macos-aarch64
+            artifact_name: agent-recall-macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -76,18 +76,18 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/claude-conversation-search
+            aarch64-linux-gnu-strip target/${{ matrix.target }}/release/agent-recall
           else
-            strip target/${{ matrix.target }}/release/claude-conversation-search
+            strip target/${{ matrix.target }}/release/agent-recall
           fi
 
       - name: Rename binary
         shell: bash
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            mv target/${{ matrix.target }}/release/claude-conversation-search.exe ${{ matrix.artifact_name }}
+            mv target/${{ matrix.target }}/release/agent-recall.exe ${{ matrix.artifact_name }}
           else
-            mv target/${{ matrix.target }}/release/claude-conversation-search ${{ matrix.artifact_name }}
+            mv target/${{ matrix.target }}/release/agent-recall ${{ matrix.artifact_name }}
           fi
 
       - name: Upload binary to release
