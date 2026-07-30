@@ -120,7 +120,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| anyhow!("Could not determine config directory"))?
-            .join("claude-conversation-search-mcp");
+            .join("agent-recall");
 
         let config_path = config_dir.join("config.yaml");
 
@@ -148,7 +148,7 @@ impl Config {
         }
 
         let cache = dirs::cache_dir().ok_or_else(|| anyhow!("Could not find cache directory"))?;
-        Ok(cache.join("claude-conversation-search"))
+        Ok(cache.join("agent-recall"))
     }
 
     pub fn get_claude_dir(&self) -> Result<PathBuf> {

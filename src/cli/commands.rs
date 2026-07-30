@@ -310,18 +310,11 @@ fn install(project_scope: bool) -> Result<()> {
     let scope = if project_scope { "project" } else { "user" };
 
     let _ = Command::new("claude")
-        .args(["mcp", "remove", "-s", scope, "claude-conversation-search"])
+        .args(["mcp", "remove", "-s", scope, "agent-recall"])
         .status();
 
     let status = Command::new("claude")
-        .args([
-            "mcp",
-            "add",
-            "-s",
-            scope,
-            "claude-conversation-search",
-            exe_path,
-        ])
+        .args(["mcp", "add", "-s", scope, "agent-recall", exe_path])
         .status()?;
 
     if !status.success() {
@@ -389,7 +382,7 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
-    println!("Cache cleared successfully. Run 'claude-search index' to rebuild.");
+    println!("Cache cleared successfully. Run 'agent-recall index' to rebuild.");
     Ok(())
 }
 
@@ -424,7 +417,7 @@ fn parse_date(s: &str) -> Result<chrono::DateTime<Utc>> {
 
 fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'agent-recall index' first.");
         return Ok(());
     }
 
@@ -519,7 +512,7 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
 
 fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'agent-recall index' first.");
         return Ok(());
     }
 
@@ -671,7 +664,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
 
 fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'agent-recall index' first.");
         return Ok(());
     }
 
@@ -1033,7 +1026,7 @@ fn view_session_from_results(
 ) -> Result<()> {
     if results.is_empty() {
         println!("No messages found for session: {session_id}");
-        println!("Tip: Use 'claude-search stats' to see available session IDs");
+        println!("Tip: Use 'agent-recall stats' to see available session IDs");
         return Ok(());
     }
 
@@ -1147,7 +1140,7 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
     use std::process::{Command, Stdio};
 
     if !index_path.exists() {
-        println!("Index not found. Please run 'claude-search index' first.");
+        println!("Index not found. Please run 'agent-recall index' first.");
         return Ok(());
     }
 

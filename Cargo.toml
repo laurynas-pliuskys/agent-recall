@@ -1,7 +1,10 @@
 [package]
-name = "claude-conversation-search"
-version = "1.5.0"
+name = "agent-recall"
+version = "2.0.0"
 edition = "2024"
+description = "Search Claude Code conversation history with Tantivy and MCP"
+license = "GPL-3.0-only"
+repository = "https://github.com/laurynas-pliuskys/agent-recall"
 
 [features]
 default = []

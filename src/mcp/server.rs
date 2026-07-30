@@ -262,7 +262,7 @@ impl McpServer {
                 },
             },
             server_info: ServerInfo {
-                name: "claude-search-mcp".to_string(),
+                name: "agent-recall".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };
@@ -1211,7 +1211,7 @@ Task(
         let current_dir = std::env::current_dir()
             .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
 
-        let release_path = current_dir.join("target/release/claude-conversation-search");
+        let release_path = current_dir.join("target/release/agent-recall");
         let exe_path = if release_path.exists() {
             release_path
         } else {

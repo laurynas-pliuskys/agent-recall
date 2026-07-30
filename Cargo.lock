@@ -3,6 +3,35 @@
 version = 4
 
 [[package]]
+name = "agent-recall"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "dirs",
+ "exec",
+ "fs2",
+ "glob",
+ "nix",
+ "once_cell",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "strip-ansi-escapes",
+ "tantivy",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -248,35 +277,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "claude-conversation-search"
-version = "1.5.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "dirs",
- "exec",
- "fs2",
- "glob",
- "nix",
- "once_cell",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "strip-ansi-escapes",
- "tantivy",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "colorchoice"

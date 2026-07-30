@@ -1,12 +1,12 @@
-use claude_conversation_search::{cli, mcp};
+use agent_recall::{cli, mcp};
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 
 #[derive(Parser)]
-#[command(name = "claude-conversation-search")]
+#[command(name = "agent-recall")]
 #[command(version)]
-#[command(about = "Search Claude Code conversations and run MCP server")]
+#[command(about = "Search conversation history with agent-recall MCP server")]
 struct Cli {
     /// Verbosity level (-v for WARN, -vv for INFO, -vvv for DEBUG)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
             clap_complete::generate(
                 shell,
                 &mut Cli::command(),
-                "claude-conversation-search",
+                "agent-recall",
                 &mut std::io::stdout(),
             );
             Ok(())
