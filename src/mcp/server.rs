@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
@@ -47,12 +47,41 @@ fn parse_date(s: &str) -> Result<DateTime<Utc>, String> {
 }
 
 // MCP Protocol Structures
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default)]
+enum RequestId {
+    #[default]
+    Missing,
+    Present(Value),
+}
+
+fn deserialize_request_id<'de, D>(deserializer: D) -> Result<RequestId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(RequestId::Present)
+}
+
+#[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
-    jsonrpc: String,
-    id: Option<Value>,
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
+    #[serde(default, deserialize_with = "deserialize_request_id")]
+    id: RequestId,
     method: String,
     params: Option<Value>,
+}
+
+impl JsonRpcRequest {
+    fn is_notification(&self) -> bool {
+        matches!(self.id, RequestId::Missing)
+    }
+
+    fn response_id(&self) -> Option<Value> {
+        match &self.id {
+            RequestId::Missing => None,
+            RequestId::Present(id) => Some(id.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,6 +174,29 @@ impl McpServer {
 
         // Auto-index if needed
         auto_index(&cache_dir)?;
+
+        let cache = CacheManager::new(&cache_dir)?;
+        let counts = cache
+            .get_session_counts()
+            .clone();
+        let search_engine = SearchEngine::new(&cache_dir, counts)?;
+
+        Ok(Self {
+            search_engine,
+            cache_dir,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_with_dir(cache_dir: std::path::PathBuf) -> Result<Self> {
+        if !cache_dir
+            .join("meta.json")
+            .exists()
+        {
+            let _indexer = crate::shared::SearchIndexer::new(&cache_dir)?;
+        } else {
+            auto_index(&cache_dir)?;
+        }
 
         let cache = CacheManager::new(&cache_dir)?;
         let counts = cache
@@ -1248,47 +1300,87 @@ Task(
         })?)
     }
 
-    async fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
-        let result = match request
+    async fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+        let is_notification = request.is_notification();
+        let response_id = request.response_id();
+
+        let (result, error_code) = match request
             .method
             .as_str()
         {
-            "initialize" => {
+            "initialize" => (
                 self.handle_initialize(request.params)
-                    .await
-            }
-            "tools/list" => {
+                    .await,
+                -32603,
+            ),
+            "tools/list" => (
                 self.handle_list_tools()
-                    .await
-            }
-            "tools/call" => {
+                    .await,
+                -32603,
+            ),
+            "tools/call" => (
                 self.handle_call_tool(
                     request
                         .params
                         .unwrap_or_default(),
                 )
-                .await
-            }
-            _ => Err(anyhow::anyhow!("Unknown method: {}", request.method)),
+                .await,
+                -32603,
+            ),
+            _ => (
+                Err(anyhow::anyhow!("Unknown method: {}", request.method)),
+                -32601,
+            ),
         };
 
-        match result {
+        if is_notification {
+            return None;
+        }
+
+        let response = match result {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
-                id: request.id,
+                id: response_id,
                 result: Some(result),
                 error: None,
             },
             Err(e) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
-                id: request.id,
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
-                    code: -32603,
+                    code: error_code,
                     message: e.to_string(),
                     data: None,
                 }),
             },
+        };
+
+        Some(response)
+    }
+}
+
+async fn process_line(server: &mut McpServer, line: &str) -> Result<Option<String>> {
+    match serde_json::from_str::<JsonRpcRequest>(line) {
+        Ok(request) => server
+            .handle_request(request)
+            .await
+            .map(|response| serde_json::to_string(&response))
+            .transpose()
+            .map_err(Into::into),
+        Err(e) => {
+            error!("Failed to parse JSON-RPC request: {}", e);
+            let error_response = JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: None,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32700,
+                    message: format!("Parse error: {e}"),
+                    data: None,
+                }),
+            };
+            Ok(Some(serde_json::to_string(&error_response)?))
         }
     }
 }
@@ -1319,49 +1411,215 @@ pub async fn run_mcp_server() -> Result<()> {
 
         debug!("Received line: {}", line);
 
-        match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(request) => {
-                let response = server
-                    .handle_request(request)
-                    .await;
-                let response_json = serde_json::to_string(&response)?;
-                debug!("Sending response: {}", response_json);
+        if let Some(response_json) = process_line(&mut server, &line).await? {
+            debug!("Sending response: {}", response_json);
 
-                stdout
-                    .write_all(response_json.as_bytes())
-                    .await?;
-                stdout
-                    .write_all(b"\n")
-                    .await?;
-                stdout
-                    .flush()
-                    .await?;
-            }
-            Err(e) => {
-                error!("Failed to parse JSON-RPC request: {}", e);
-                let error_response = JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: None,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32700,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                let response_json = serde_json::to_string(&error_response)?;
-                stdout
-                    .write_all(response_json.as_bytes())
-                    .await?;
-                stdout
-                    .write_all(b"\n")
-                    .await?;
-                stdout
-                    .flush()
-                    .await?;
-            }
+            stdout
+                .write_all(response_json.as_bytes())
+                .await?;
+            stdout
+                .write_all(b"\n")
+                .await?;
+            stdout
+                .flush()
+                .await?;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jsonrpc_request_notification_detection() {
+        let request_json = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        let request: JsonRpcRequest = serde_json::from_str(request_json).unwrap();
+        assert!(request.is_notification());
+        assert_eq!(request.method, "notifications/initialized");
+
+        let req_with_id_json = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let req_with_id: JsonRpcRequest = serde_json::from_str(req_with_id_json).unwrap();
+        assert!(!req_with_id.is_notification());
+
+        let req_with_null_id_json = r#"{"jsonrpc":"2.0","id":null,"method":"initialize"}"#;
+        let req_with_null_id: JsonRpcRequest = serde_json::from_str(req_with_null_id_json).unwrap();
+        assert!(!req_with_null_id.is_notification());
+        assert_eq!(req_with_null_id.response_id(), Some(Value::Null));
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_notification_returns_none() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut server = McpServer::new_with_dir(cache_dir).unwrap();
+
+        let notification: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
+
+        let response = server
+            .handle_request(notification)
+            .await;
+        assert!(
+            response.is_none(),
+            "Notifications MUST NOT receive a response"
+        );
+
+        let req_with_id: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":42,"method":"initialize"}"#).unwrap();
+
+        let response = server
+            .handle_request(req_with_id)
+            .await;
+        assert!(
+            response.is_some(),
+            "Requests with ID must return a response"
+        );
+        let resp = response.unwrap();
+        assert_eq!(resp.id, Some(serde_json::json!(42)));
+        assert!(
+            resp.error
+                .is_none()
+        );
+        assert!(
+            resp.result
+                .is_some()
+        );
+
+        let req_with_null_id: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"initialize"}"#).unwrap();
+        let response = server
+            .handle_request(req_with_null_id)
+            .await
+            .unwrap();
+        assert_eq!(response.id, Some(Value::Null));
+        assert!(
+            response
+                .result
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_unknown_method_with_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut server = McpServer::new_with_dir(cache_dir).unwrap();
+
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":99,"method":"non_existent_method"}"#)
+                .unwrap();
+
+        let response = server
+            .handle_request(req)
+            .await;
+        assert!(response.is_some());
+        let resp = response.unwrap();
+        assert_eq!(resp.id, Some(serde_json::json!(99)));
+        assert!(
+            resp.error
+                .is_some()
+        );
+        assert_eq!(
+            resp.error
+                .as_ref()
+                .unwrap()
+                .code,
+            -32601
+        );
+        assert_eq!(
+            resp.error
+                .unwrap()
+                .message,
+            "Unknown method: non_existent_method"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_notification_shaped_method_with_id_is_not_a_notification() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let mut server = McpServer::new_with_dir(cache_dir).unwrap();
+
+        for method in ["notifications/not-a-notification", "$/not-a-notification"] {
+            let request: JsonRpcRequest = serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": method
+            }))
+            .unwrap();
+            let response = server
+                .handle_request(request)
+                .await
+                .unwrap();
+            assert_eq!(
+                response
+                    .error
+                    .unwrap()
+                    .code,
+                -32601
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_line_suppresses_only_notification_response() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let mut server = McpServer::new_with_dir(cache_dir).unwrap();
+
+        let lines = [
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        ];
+        let mut responses = Vec::new();
+        for line in lines {
+            if let Some(response) = process_line(&mut server, line)
+                .await
+                .unwrap()
+            {
+                responses.push(serde_json::from_str::<Value>(&response).unwrap());
+            }
+        }
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[1]["id"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_process_line_returns_parse_error_for_malformed_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache_dir = temp_dir
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let mut server = McpServer::new_with_dir(cache_dir).unwrap();
+
+        let response = process_line(&mut server, "{")
+            .await
+            .unwrap()
+            .unwrap();
+        let response: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["id"], Value::Null);
+        assert_eq!(response["error"]["code"], -32700);
+    }
 }
