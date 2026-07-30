@@ -1,6 +1,6 @@
 # Agent Recall
 
-**CLI + MCP service for searching AI coding assistant conversation history.**
+**CLI + MCP service for searching Claude Code conversation history.**
 
 A single binary that works two ways:
 - **CLI**: Search your conversations from the terminal (`agent-recall search "rust async"`)
@@ -17,7 +17,7 @@ If you work across **dozens of projects**, you know the pain:
 - "What was that regex pattern I used for parsing logs?"
 - "How did I configure that Docker setup?"
 
-This tool indexes **conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
+This tool indexes **Claude Code conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
 
 > **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
 
@@ -34,7 +34,7 @@ This tool indexes **conversations across all projects** and lets your agent sear
 
 ## Overview
 
-`agent-recall` indexes transcript histories with smart filtering (skips file dumps, keeps reasoning) and exposes search via MCP so agents can find relevant past conversations during your session.
+`agent-recall` indexes Claude Code transcript histories with smart filtering (skips file dumps, keeps reasoning) and exposes search via MCP so agents can find relevant past conversations during your session.
 
 ## Features
 
@@ -56,7 +56,7 @@ This tool indexes **conversations across all projects** and lets your agent sear
 - Configurable result limits and project-based filtering
 
 ### 🎯 **Smart Features**
-- **Auto-discovery** of transcript directories
+- **Auto-discovery** of Claude Code transcript directories (`~/.claude/projects/`)
 - **Smart content filtering**: Indexes text/thinking blocks, skips tool_result file dumps (noise reduction)
 - **UUID-based deduplication**: Handles session resume and rollbacks gracefully
 - **Passive health monitoring**: Warns when index is stale, offers reindex tool
@@ -69,7 +69,7 @@ This tool indexes **conversations across all projects** and lets your agent sear
 ```bash
 cargo build --release
 cp target/release/agent-recall ~/.local/bin/
-agent-recall mcp register
+agent-recall install
 ```
 
 Verify: `claude mcp list` should show `agent-recall`.
@@ -82,7 +82,7 @@ agent-recall index
 
 # Search for anything
 agent-recall search "kubernetes"
-agent-recall search "error handling" 
+agent-recall search "error handling"
 agent-recall search "rust async"
 
 # Search with project filter
@@ -99,12 +99,12 @@ Build or update the search index.
 
 ```bash
 agent-recall index              # Build/update index
-agent-recall index --rebuild    # Force full rebuild (recreates index)
+agent-recall index rebuild      # Force full rebuild (recreates index)
 ```
 
 **What it does:**
-- Scans transcript directories for `*.jsonl` files
-- Parses conversation entries with timestamps, content, and metadata  
+- Scans Claude Code transcript directories for `*.jsonl` files
+- Parses conversation entries with timestamps, content, and metadata
 - Builds full-text search index using Tantivy
 - Index stored at `~/.cache/agent-recall/`
 
@@ -122,7 +122,7 @@ agent-recall search "error" --project "my-project" --limit 5
 
 **Query features:**
 - **Simple text**: `agent-recall search "docker compose"`
-- **Multiple terms**: `agent-recall search "rust error handling"`  
+- **Multiple terms**: `agent-recall search "rust error handling"`
 - **Phrase search**: `agent-recall search '"exact phrase"'` (wrap in quotes)
 - **Boolean AND**: `agent-recall search "rust AND async"` (both terms must appear)
 
@@ -174,7 +174,7 @@ index:
   writer_heap_mb: 50
 ```
 
-Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`agent-recall index --rebuild`).
+Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`agent-recall index rebuild`).
 
 ### Cache Location
 
