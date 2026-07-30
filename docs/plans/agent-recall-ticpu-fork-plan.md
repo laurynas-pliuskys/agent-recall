@@ -1,7 +1,7 @@
 # Agent Recall: ticpu Fork and Replacement Plan
 
-Status: Phase 3 complete  
-Date: 2026-07-30  
+Status: Phase 4 complete  
+Date: 2026-07-31  
 Legacy repository: `laurynas-pliuskys/agent-recall-python-legacy`  
 Replacement repository: `laurynas-pliuskys/agent-recall`  
 Upstream: `ticpu/claude-conversation-search-mcp`  
@@ -133,26 +133,19 @@ issues, and prior decisions remain available.
 - Detailed commands, outcomes, and defect mechanics are stored in
   [`agent-recall-ticpu-baseline.md`](agent-recall-ticpu-baseline.md).
 
-### Phase 4: Perform the mechanical rename
+### Phase 4: Perform the mechanical rename — completed
 
 Rename all user-visible and internal identities:
 
-- Cargo package and Rust crate where appropriate;
-- release binary and CLI command to `agent-recall`;
-- MCP server identifier and tool-facing descriptions;
-- README, screenshots, installer, shell completions, and examples;
-- configuration directory and configuration filenames;
-- cache/index directory;
-- environment variables;
-- logs and release artifacts;
-- CI workflow names and release automation.
+- Cargo package renamed to `agent-recall` and version set to `2.0.0`;
+- License explicitly declared as `GPL-3.0-only` in `Cargo.toml` and `README.md`;
+- Release binary and CLI command updated to `agent-recall`;
+- MCP server identifier updated to `agent-recall`;
+- Configuration directory updated to `~/.config/agent-recall`;
+- Cache directory updated to `~/.cache/agent-recall`;
+- Shell completions, `CLAUDE.md`, `README.md`, and CI/release workflows updated to `agent-recall`.
 
-Provide a migration message or temporary compatibility alias for users invoking
-the old ticpu binary name. Start the replacement as a prerelease such as
-`2.0.0-alpha.1` to communicate that this is a breaking implementation change.
-
-Exit condition: no unintended Claude-specific product branding remains, while
-source-specific parser terminology is retained where technically accurate.
+PR #4 (`refactor: rename binary and package to agent-recall v2.0.0`) submitted from branch `rename-to-agent-recall`.
 
 ### Phase 5: Introduce a real multi-source core
 
