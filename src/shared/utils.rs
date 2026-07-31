@@ -69,8 +69,6 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         }
     };
 
-    let mut cache_manager = CacheManager::new(index_path)?;
-
     let mut indexer = if index_path
         .join("meta.json")
         .exists()
@@ -111,7 +109,12 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
         SearchIndexer::new(index_path)?
     };
 
+    // Construct cache metadata after schema handling. A schema mismatch removes
+    // the whole cache directory, so retaining metadata loaded before that point
+    // would incorrectly mark every source artifact as already indexed.
+    let mut cache_manager = CacheManager::new(index_path)?;
     let all_files = discover_jsonl_files()?;
+    cache_manager.remove_missing_files(&mut indexer, &all_files)?;
     cache_manager.update_incremental(&mut indexer, all_files)?;
     Ok(())
 }

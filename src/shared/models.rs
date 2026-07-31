@@ -1,6 +1,7 @@
 use super::source::Source;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Raw JSONL message structure for parsing Claude Code logs
 #[derive(Debug, Deserialize, Clone)]
@@ -50,6 +51,9 @@ pub struct ConversationEntry {
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub session_id: String,
+    /// Source-native artifact used to retrieve the original conversation.
+    #[serde(default)]
+    pub source_artifact: PathBuf,
     pub project_path: String,
     pub timestamp: DateTime<Utc>,
     pub message_type: MessageType,
@@ -81,6 +85,10 @@ impl ConversationEntry {
 
     pub fn project_path_display(&self) -> String {
         super::path_utils::home_to_tilde(&self.project_path)
+    }
+
+    pub fn is_tool_record(&self) -> bool {
+        looks_like_tool_record(&self.content)
     }
 }
 
@@ -133,6 +141,7 @@ pub struct SearchResult {
     pub project: String,
     pub project_path: String,
     pub session_id: String,
+    pub source_artifact: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub score: f32,
     pub snippet: String,
@@ -175,6 +184,10 @@ impl SearchResult {
         super::path_utils::home_to_tilde(&self.project_path)
     }
 
+    pub fn is_tool_record(&self) -> bool {
+        looks_like_tool_record(&self.content)
+    }
+
     /// Short display name for message type (User, AI, Sum, Sys)
     pub fn role_display(&self) -> &'static str {
         match self
@@ -187,4 +200,29 @@ impl SearchResult {
             _ => "?",
         }
     }
+}
+
+/// Identify records whose entire payload is a tool call/result. Assistant text
+/// that merely contains an embedded tool block remains ordinary conversation.
+pub fn looks_like_tool_record(content: &str) -> bool {
+    let content = content.trim_start();
+    if content.starts_with("[tool:")
+        || content.starts_with("[tool_result:")
+        || content.starts_with("[result]")
+        || content.starts_with("[error]")
+    {
+        return true;
+    }
+
+    let Some(bracket_end) = content.find(']') else {
+        return false;
+    };
+    if !content.starts_with('[') {
+        return false;
+    }
+    let prefix = &content[1..bracket_end];
+    !prefix.contains(' ')
+        && prefix
+            .chars()
+            .any(|character| character.is_uppercase() || character == '_' || character == ':')
 }

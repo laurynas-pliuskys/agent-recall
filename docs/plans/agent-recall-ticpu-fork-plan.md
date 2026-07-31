@@ -1,6 +1,6 @@
 # Agent Recall: ticpu Fork and Replacement Plan
 
-Status: Phase 4 complete  
+Status: Phase 6 complete
 Date: 2026-07-31  
 Legacy repository: `laurynas-pliuskys/agent-recall-python-legacy`  
 Replacement repository: `laurynas-pliuskys/agent-recall`  
@@ -147,9 +147,9 @@ Rename all user-visible and internal identities:
 
 PR #4 (`refactor: rename binary and package to agent-recall v2.0.0`) submitted from branch `rename-to-agent-recall`.
 
-### Phase 5: Introduce a real multi-source core
+### Phase 5: Introduce a real multi-source core — completed
 
-Create a source boundary resembling:
+The shared engine now uses a source boundary resembling:
 
 ```text
 ConversationSource
@@ -159,7 +159,7 @@ ConversationSource
 `- resume_hint()
 ```
 
-Define one normalized record containing at least:
+The normalized record contains:
 
 ```text
 source
@@ -175,38 +175,45 @@ sequence
 tool/thinking metadata where applicable
 ```
 
-Use source-qualified identities throughout:
+Source-qualified identities are used throughout:
 
 ```text
 (source, session_id)
-(source, message_id)
+(source, session_id, message_id)
 ```
 
-Propagate `source` through discovery, parsing, cache metadata, Tantivy schema,
-search results, MCP responses, filtering, navigation, and health reporting.
+`source` is propagated through discovery, parsing, per-artifact cache metadata,
+Tantivy documents, search/context retrieval, MCP responses, filtering,
+navigation, and health reporting. Exact `(source, session_id)`,
+`(source, session_id, message_id)`, and `(source, artifact path)` keys prevent
+cross-source replacement or context mixing. Parser versions invalidate only
+the artifacts owned by the changed adapter, while schema changes trigger a full
+index rebuild.
 
-Exit condition: Claude works entirely through the generic interface, and there
-are no unconditional Claude paths in the shared indexing/search pipeline.
+### Phase 6: Add Codex as the architectural proof — completed
 
-### Phase 6: Add Codex as the architectural proof
+The Codex adapter discovers active and archived rollout JSONL under each
+detected Codex home, including the Windows-host home when running in WSL. It
+uses the rollout metadata `id` as the native resumable thread ID and records the
+exact source artifact for later full-fidelity reads.
 
-1. Implement Codex JSONL discovery and parsing.
-2. Build parser fixtures from representative Codex rollouts, including malformed
-   and partially written sessions.
-3. Add union-search tests containing overlapping Claude and Codex terms.
-4. Add `source=claude` and `source=codex` filters.
-5. Implement source-correct navigation/resume hints.
-6. Ensure a Codex discovery or parsing failure does not stop Claude indexing,
-   and vice versa.
+The parser indexes user-visible user/assistant messages plus canonical textual
+tool calls and outputs. It excludes developer/system instructions, injected
+runtime/app/plugin context, encrypted reasoning, and mirrored event records.
+Non-text image/audio payloads are not indexed. Malformed non-final JSON records
+fail that artifact visibly; a partially written final line is tolerated for an
+active rollout.
 
-Acceptance criteria:
+Union search, source filters, overlapping-ID isolation, artifact-scoped
+replacement, source-correct context, parser invalidation, and source-specific
+resume hints have regression coverage. A release build was also validated with
+an isolated cache against the current local Codex session corpus on 2026-07-31;
+the active session and its textual tool calls/results were searchable.
 
-- default search returns relevant results from both sources;
-- source filtering is reliable;
-- source ID collisions cannot overwrite data;
-- context opens the correct original transcript;
-- incremental indexing and staleness reporting work per source;
-- one broken source fails visibly but does not block healthy sources.
+Retrieval is fragment-first: search returns bounded previews, technical records
+do not consume the default conversational context window, a matched technical
+record is always shown, centered expansion defaults to 500 characters per
+message, and exact/full retrieval remains explicit.
 
 ### Phase 7: Selectively port approved legacy concepts
 

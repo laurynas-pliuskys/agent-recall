@@ -1,6 +1,6 @@
 # Agent Recall
 
-**CLI + MCP service for searching Claude Code conversation history.**
+**CLI + MCP service for searching Claude Code and Codex conversation history.**
 
 A single binary that works two ways:
 - **CLI**: Search your conversations from the terminal (`agent-recall search "rust async"`)
@@ -17,7 +17,7 @@ If you work across **dozens of projects**, you know the pain:
 - "What was that regex pattern I used for parsing logs?"
 - "How did I configure that Docker setup?"
 
-This tool indexes **Claude Code conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
+This tool indexes **Claude Code and Codex conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
 
 > **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
 
@@ -29,12 +29,12 @@ This tool indexes **Claude Code conversations across all projects** and lets you
 | Cross-project search | ✓ All projects indexed | ✗ Per-project only |
 | Full-text search | ✓ Tantivy/BM25 | Some have regex |
 | Jump to specific message | ✓ `center_on` + `-B/-A` context | ✗ |
-| Smart content filtering | ✓ Skips tool_result noise | ✗ Index everything |
+| Technical evidence | ✓ Searchable tool calls/results, compact by default | Varies |
 | Passive staleness detection | ✓ Warns when index outdated | ✗ |
 
 ## Overview
 
-`agent-recall` indexes Claude Code transcript histories with smart filtering (skips file dumps, keeps reasoning) and exposes search via MCP so agents can find relevant past conversations during your session.
+`agent-recall` indexes Claude Code and Codex transcript histories and exposes search via MCP so agents can find relevant past conversations during a later session. User-visible turns and textual tool calls/results are searchable; system/developer instructions, injected runtime context, mirrored events, and Codex reasoning records are excluded.
 
 ## Features
 
@@ -56,9 +56,9 @@ This tool indexes **Claude Code conversations across all projects** and lets you
 - Configurable result limits and project-based filtering
 
 ### 🎯 **Smart Features**
-- **Auto-discovery** of Claude Code transcript directories (`~/.claude/projects/`)
-- **Smart content filtering**: Indexes text/thinking blocks, skips tool_result file dumps (noise reduction)
-- **UUID-based deduplication**: Handles session resume and rollbacks gracefully
+- **Auto-discovery** of Claude Code (`~/.claude/projects/`) and Codex (`$CODEX_HOME/sessions/` and `archived_sessions/`) transcripts
+- **Evidence-preserving tool indexing**: Keeps textual calls, commands, queries, and outputs searchable while hiding neighboring tool noise from compact results by default
+- **Source-qualified identity**: Prevents same-looking Claude and Codex session/message IDs from colliding
 - **Passive health monitoring**: Warns when index is stale, offers reindex tool
 - **Robust parsing** handles malformed JSONL gracefully
 
@@ -103,7 +103,7 @@ agent-recall index rebuild      # Force full rebuild (recreates index)
 ```
 
 **What it does:**
-- Scans Claude Code transcript directories for `*.jsonl` files
+- Scans Claude Code and Codex transcript directories for `*.jsonl` files
 - Parses conversation entries with timestamps, content, and metadata
 - Builds full-text search index using Tantivy
 - Index stored at `~/.cache/agent-recall/`
@@ -154,6 +154,15 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
 - **reindex**: Update index when results seem incomplete.
 - **respawn_server**: Reload MCP server after rebuilding.
 
+### Context-efficient retrieval
+
+Use retrieval in stages so a long transcript does not consume the model's context:
+
+1. `search_conversations` returns one compact match per conversation with short surrounding-message previews.
+2. `get_session_messages(center_on=..., -B=..., -A=...)` expands only the relevant neighborhood. It defaults to 500 characters per message and omits neighboring tool records; pass `include=["tools"]` when the technical trace matters.
+3. `get_messages(ids=[...], source=..., session_id=...)` retrieves the exact source-qualified matched record, including a full textual tool call or output.
+4. Use paginated session reads only when the focused fragment is insufficient; `truncate_length=0` explicitly requests full message content.
+
 ## Configuration
 
 ### Config File
@@ -162,9 +171,9 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
 
 ```yaml
 limits:
-  per_file_chars: 150000        # Max chars indexed per JSONL file
-  tool_result_max_chars: 2000   # Max chars kept from tool_result content
-  tool_input_max_chars: 200     # Max chars kept from tool_use input
+  per_file_chars: 150000
+  tool_result_max_chars: 2000   # Claude tool-result preview indexed per block
+  tool_input_max_chars: 200     # Claude tool-input preview indexed per block
 
 search:
   exclude_patterns: []          # Regex patterns to exclude from results
@@ -174,7 +183,7 @@ index:
   writer_heap_mb: 50
 ```
 
-Changing `tool_result_max_chars` or `tool_input_max_chars` requires a reindex (`agent-recall index rebuild`).
+Codex textual tool payloads are indexed in full so exact commands, SQL, and returned evidence remain searchable. Response truncation controls MCP token use; non-text media payloads are not indexed. Changing Claude tool limits requires a reindex (`agent-recall index rebuild`).
 
 ### Cache Location
 

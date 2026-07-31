@@ -1,12 +1,13 @@
 use super::config::get_config;
 use super::models::ConversationEntry;
+use super::source::Source;
 use anyhow::Result;
 use std::path::Path;
-use tantivy::schema::{FAST, Field, INDEXED, STORED, Schema, SchemaBuilder, TEXT};
+use tantivy::schema::{FAST, Field, INDEXED, STORED, STRING, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexWriter, Term, doc};
 
 /// Current schema version - increment when schema changes to trigger rebuild
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub struct IndexFields {
     pub uuid_field: Field,
@@ -27,6 +28,10 @@ pub struct IndexFields {
     pub is_sidechain_field: Field,
     pub agent_id_field: Field,
     pub source_field: Field,
+    pub conversation_key_field: Field,
+    pub document_key_field: Field,
+    pub artifact_key_field: Field,
+    pub source_artifact_field: Field,
 }
 
 pub struct SearchIndexer {
@@ -64,7 +69,14 @@ impl SearchIndexer {
         let is_sidechain_field =
             schema_builder.add_bool_field("is_sidechain", INDEXED | STORED | FAST);
         let agent_id_field = schema_builder.add_text_field("agent_id", TEXT | STORED | FAST);
-        let source_field = schema_builder.add_text_field("source", TEXT | STORED | FAST);
+        let source_field = schema_builder.add_text_field("source", STRING | STORED | FAST);
+        let conversation_key_field =
+            schema_builder.add_text_field("conversation_key", STRING | STORED | FAST);
+        let document_key_field =
+            schema_builder.add_text_field("document_key", STRING | STORED | FAST);
+        let artifact_key_field =
+            schema_builder.add_text_field("artifact_key", STRING | STORED | FAST);
+        let source_artifact_field = schema_builder.add_text_field("source_artifact", STORED);
 
         let schema = schema_builder.build();
         let fields = IndexFields {
@@ -86,6 +98,10 @@ impl SearchIndexer {
             is_sidechain_field,
             agent_id_field,
             source_field,
+            conversation_key_field,
+            document_key_field,
+            artifact_key_field,
+            source_artifact_field,
         };
 
         (schema, fields)
@@ -96,28 +112,8 @@ impl SearchIndexer {
         let index = Index::open_in_dir(index_path)?;
         let actual_schema = index.schema();
 
-        // Check required fields exist - uuid and source are required in v3 schema
-        let required_fields = [
-            "uuid",
-            "content",
-            "project",
-            "session_id",
-            "timestamp",
-            "message_type",
-            "model",
-            "source",
-        ];
-
-        for field_name in required_fields {
-            if actual_schema
-                .get_field(field_name)
-                .is_err()
-            {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
+        let (expected_schema, _) = Self::build_schema();
+        Ok(actual_schema == expected_schema)
     }
 
     pub fn new(index_path: &Path) -> Result<Self> {
@@ -155,6 +151,10 @@ impl SearchIndexer {
             is_sidechain_field: schema.get_field("is_sidechain")?,
             agent_id_field: schema.get_field("agent_id")?,
             source_field: schema.get_field("source")?,
+            conversation_key_field: schema.get_field("conversation_key")?,
+            document_key_field: schema.get_field("document_key")?,
+            artifact_key_field: schema.get_field("artifact_key")?,
+            source_artifact_field: schema.get_field("source_artifact")?,
         };
 
         let config = get_config();
@@ -163,18 +163,25 @@ impl SearchIndexer {
         Ok(Self { writer, fields })
     }
 
-    /// Delete all documents for a session before re-indexing
-    pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        // TEXT field tokenizes at hyphens, so use first segment for deletion
-        // UUID first segments are unique enough to avoid false matches
-        let first_segment = session_id
-            .split('-')
-            .next()
-            .unwrap_or(session_id);
+    /// Delete one source-qualified conversation before re-indexing.
+    pub fn delete_conversation(&mut self, source: Source, session_id: &str) -> Result<()> {
         let term = Term::from_field_text(
             self.fields
-                .session_field,
-            first_segment,
+                .conversation_key_field,
+            &source.conversation_key(session_id),
+        );
+        self.writer
+            .delete_term(term);
+        Ok(())
+    }
+
+    /// Delete every document originating from one source artifact.
+    pub fn delete_artifact(&mut self, source: Source, artifact: &Path) -> Result<()> {
+        let artifact = artifact.to_string_lossy();
+        let term = Term::from_field_text(
+            self.fields
+                .artifact_key_field,
+            &source.artifact_key(&artifact),
         );
         self.writer
             .delete_term(term);
@@ -183,6 +190,18 @@ impl SearchIndexer {
 
     pub fn index_conversations(&mut self, entries: Vec<ConversationEntry>) -> Result<()> {
         for entry in entries {
+            let conversation_key = entry
+                .source
+                .conversation_key(&entry.session_id);
+            let document_key = entry
+                .source
+                .doc_key(&entry.session_id, &entry.uuid);
+            let artifact = entry
+                .source_artifact
+                .to_string_lossy();
+            let artifact_key = entry
+                .source
+                .artifact_key(&artifact);
             let doc = doc!(
                 self.fields.uuid_field => entry.uuid,
                 self.fields.parent_uuid_field => entry.parent_uuid.unwrap_or_default(),
@@ -202,6 +221,10 @@ impl SearchIndexer {
                 self.fields.is_sidechain_field => entry.is_sidechain,
                 self.fields.agent_id_field => entry.agent_id.unwrap_or_default(),
                 self.fields.source_field => entry.source.as_str(),
+                self.fields.conversation_key_field => conversation_key,
+                self.fields.document_key_field => document_key,
+                self.fields.artifact_key_field => artifact_key,
+                self.fields.source_artifact_field => artifact.as_ref(),
             );
 
             self.writer

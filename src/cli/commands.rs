@@ -82,6 +82,9 @@ pub enum CliCommands {
     Session {
         /// Session ID to view
         session_id: String,
+        /// Source for an otherwise ambiguous session ID
+        #[arg(long)]
+        source: Option<String>,
         /// Show full content (not just snippets)
         #[arg(long)]
         full: bool,
@@ -268,6 +271,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
         }
         CliCommands::Session {
             session_id,
+            source,
             full,
             center,
             context,
@@ -284,6 +288,11 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             view_session(
                 &index_path,
                 session_id,
+                source
+                    .as_deref()
+                    .map(str::parse::<shared::Source>)
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!(error))?,
                 max_content,
                 center,
                 ctx_before,
@@ -463,8 +472,13 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         before: opts.before,
     };
 
-    let results =
-        search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
+    let results = search_engine.search_with_context_options(
+        query,
+        opts.context_before,
+        opts.context_after,
+        opts.display
+            .include_tools,
+    )?;
 
     let mut session_seen = std::collections::HashSet::new();
     let filtered: Vec<_> = results
@@ -490,8 +504,11 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
             }
             session_seen.insert(
                 r.matched_message
-                    .session_id
-                    .clone(),
+                    .source
+                    .conversation_key(
+                        &r.matched_message
+                            .session_id,
+                    ),
             )
         })
         .take(opts.limit)
@@ -810,19 +827,13 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 fn view_session(
     index_path: &Path,
     session_id: String,
+    source: Option<shared::Source>,
     truncate_length: usize,
     center_on: Option<String>,
     context_before: usize,
     context_after: usize,
 ) -> Result<()> {
-    // Read from JSONL directly for full-fidelity content
-    let entries = if let Some(jsonl_path) = shared::find_session_jsonl(&session_id)? {
-        shared::parser::JsonlParser::with_full_content().parse_file(&jsonl_path)?
-    } else if index_path.exists() {
-        // Fallback to Tantivy index (content may be truncated from indexing)
-        eprintln!(
-            "Warning: JSONL file not found, falling back to index (content may be truncated)"
-        );
+    let entries = if index_path.exists() {
         let cache = CacheManager::new(index_path)?;
         let search_engine = SearchEngine::new(
             index_path,
@@ -830,15 +841,30 @@ fn view_session(
                 .get_session_counts()
                 .clone(),
         )?;
-        let results = search_engine.get_session_messages(&session_id)?;
-        return view_session_from_results(
-            results,
-            &session_id,
-            truncate_length,
-            center_on,
-            context_before,
-            context_after,
-        );
+        let results = if let Some(source) = source {
+            search_engine.get_conversation_messages(source, &session_id)?
+        } else {
+            search_engine.get_session_messages(&session_id)?
+        };
+        if let Some(first) = results.first()
+            && first
+                .source_artifact
+                .exists()
+        {
+            shared::conversation_source(first.source).parse(&first.source_artifact, true)?
+        } else {
+            eprintln!(
+                "Warning: source artifact not found, falling back to index (content may be truncated)"
+            );
+            return view_session_from_results(
+                results,
+                &session_id,
+                truncate_length,
+                center_on,
+                context_before,
+                context_after,
+            );
+        }
     } else {
         println!("No JSONL file or index found for session: {session_id}");
         return Ok(());

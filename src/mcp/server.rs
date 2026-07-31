@@ -210,31 +210,24 @@ impl McpServer {
         })
     }
 
-    /// Check if a session's source JSONL is stale and reindex if needed.
+    /// Check if a source artifact is stale and reindex if needed.
     /// Returns true if reindexing occurred.
-    fn ensure_session_fresh(&mut self, session_id: &str, project_path: &str) -> Result<bool> {
-        use crate::shared::path_utils::session_jsonl_path;
-
-        let jsonl_path = match session_jsonl_path(project_path, session_id) {
-            Some(p) if p.exists() => p,
-            _ => return Ok(false),
-        };
-
-        let cache = CacheManager::new(&self.cache_dir)?;
-        if !cache.needs_indexing(&jsonl_path)? {
+    fn ensure_artifact_fresh(&mut self, source_artifact: &std::path::Path) -> Result<bool> {
+        if !source_artifact.exists() {
             return Ok(false);
         }
 
-        info!(
-            "Session {} is stale, reindexing {}",
-            session_id,
-            jsonl_path.display()
-        );
+        let cache = CacheManager::new(&self.cache_dir)?;
+        if !cache.needs_indexing(source_artifact)? {
+            return Ok(false);
+        }
+
+        info!("Reindexing stale artifact {}", source_artifact.display());
 
         // Reindex just this file
         let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
         let mut cache = CacheManager::new(&self.cache_dir)?;
-        cache.update_incremental(&mut indexer, vec![jsonl_path])?;
+        cache.update_incremental(&mut indexer, vec![source_artifact.to_path_buf()])?;
 
         // Reload search engine
         let counts = cache
@@ -390,6 +383,12 @@ impl McpServer {
                             "type": "string",
                             "description": "Session ID to retrieve messages for"
                         },
+                        "source": {
+                            "type": "string",
+                            "enum": ["claude", "codex"],
+                            "description": "Source for an otherwise ambiguous session ID",
+                            "optional": true
+                        },
                         "offset": {
                             "type": "integer",
                             "description": "Starting message index",
@@ -400,7 +399,7 @@ impl McpServer {
                             "type": "integer",
                             "description": "Messages per page",
                             "optional": true,
-                            "default": 50
+                            "default": 20
                         },
                         "center_on": {
                             "type": "string",
@@ -427,7 +426,13 @@ impl McpServer {
                             "type": "integer",
                             "description": "Chars shown per message. 0 = full content",
                             "optional": true,
-                            "default": 0
+                            "default": 500
+                        },
+                        "include": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["tools"] },
+                            "description": "Include neighboring tool calls/results; a centered tool record is always included",
+                            "optional": true
                         }
                     },
                     "required": ["session_id"]
@@ -442,6 +447,12 @@ impl McpServer {
                         "session_id": {
                             "type": "string",
                             "description": "Session ID to summarize"
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": ["claude", "codex"],
+                            "description": "Source for an otherwise ambiguous session ID",
+                            "optional": true
                         }
                     },
                     "required": ["session_id"]
@@ -449,7 +460,7 @@ impl McpServer {
             },
             Tool {
                 name: "get_messages".to_string(),
-                description: "Get full content of specific messages by UUID. Use after search to read complete message text.".to_string(),
+                description: "Get full content of specific records by message ID. Pass source and session_id from the search result for exact source-qualified retrieval.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -457,6 +468,17 @@ impl McpServer {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Message UUIDs (from 💬 in search results)"
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": ["claude", "codex"],
+                            "description": "Source for otherwise ambiguous message IDs",
+                            "optional": true
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for exact source-qualified retrieval; requires source",
+                            "optional": true
                         }
                     },
                     "required": ["ids"]
@@ -709,8 +731,12 @@ impl McpServer {
         };
 
         let search_engine = &self.search_engine;
-        let results_with_context =
-            search_engine.search_with_context(query, context_before, context_after)?;
+        let results_with_context = search_engine.search_with_context_options(
+            query,
+            context_before,
+            context_after,
+            display_opts.include_tools,
+        )?;
 
         // Filter and deduplicate
         let mut session_seen = std::collections::HashSet::new();
@@ -743,7 +769,11 @@ impl McpServer {
                     }
                 }
                 // Deduplicate by session
-                session_seen.insert(session.clone())
+                session_seen.insert(
+                    r.matched_message
+                        .source
+                        .conversation_key(session),
+                )
             })
             .take(limit)
             .collect();
@@ -804,34 +834,62 @@ impl McpServer {
     }
 
     async fn tool_get_session_messages(&mut self, args: Option<Value>) -> Result<Value> {
-        use crate::shared::parser::JsonlParser;
-        use crate::shared::path_utils::find_session_jsonl;
-
         let args = args.unwrap_or_default();
         let session_id = args
             .get("session_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
-
-        // Read from JSONL directly for full-fidelity content
-        let entries = if let Some(jsonl_path) = find_session_jsonl(session_id)? {
-            JsonlParser::with_full_content().parse_file(&jsonl_path)?
+        let source = args
+            .get("source")
+            .and_then(|value| value.as_str())
+            .map(str::parse::<crate::shared::Source>)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let indexed_messages = if let Some(source) = source {
+            self.search_engine
+                .get_conversation_messages(source, session_id)?
         } else {
-            // Fallback to Tantivy index
-            let mut messages = self
-                .search_engine
-                .get_session_messages(session_id)?;
-            if let Some(first) = messages.first()
-                && self.ensure_session_fresh(session_id, &first.project_path)?
-            {
-                messages = self
-                    .search_engine
-                    .get_session_messages(session_id)?;
-            }
-            // Convert SearchResult to ConversationEntry-like display
-            return self.format_session_from_index(messages, session_id, &args);
+            self.search_engine
+                .get_session_messages(session_id)?
         };
 
+        let artifact = indexed_messages
+            .first()
+            .and_then(|first| {
+                (!first
+                    .source_artifact
+                    .as_os_str()
+                    .is_empty())
+                .then(|| {
+                    (
+                        first.source,
+                        first
+                            .source_artifact
+                            .clone(),
+                    )
+                })
+            });
+
+        if let Some((artifact_source, artifact_path)) = artifact
+            && artifact_path.exists()
+        {
+            self.ensure_artifact_fresh(&artifact_path)?;
+
+            // Read the source artifact directly for full-fidelity content.
+            let entries =
+                crate::shared::conversation_source(artifact_source).parse(&artifact_path, true)?;
+            return self.format_session_entries(entries, session_id, &args);
+        };
+
+        self.format_session_from_index(indexed_messages, session_id, &args)
+    }
+
+    fn format_session_entries(
+        &self,
+        entries: Vec<crate::shared::ConversationEntry>,
+        session_id: &str,
+        args: &Value,
+    ) -> Result<Value> {
         if entries.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
                 content: vec![ToolResult {
@@ -842,9 +900,25 @@ impl McpServer {
             })?);
         }
 
-        let messages: Vec<_> = entries
+        let all_messages: Vec<_> = entries
             .into_iter()
             .filter(|e| e.is_displayable())
+            .collect();
+        let center_on = args
+            .get("center_on")
+            .and_then(|value| value.as_str());
+        let include_tools = json_strings(args.get("include")).contains(&"tools".to_string());
+        let messages: Vec<_> = all_messages
+            .into_iter()
+            .filter(|message| {
+                include_tools
+                    || !message.is_tool_record()
+                    || center_on.is_some_and(|uuid| {
+                        message
+                            .uuid
+                            .starts_with(uuid)
+                    })
+            })
             .collect();
 
         let total = messages.len();
@@ -856,19 +930,27 @@ impl McpServer {
         let truncate_length = args
             .get("truncate_length")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+            .unwrap_or(500) as usize;
 
-        let center_on = args
-            .get("center_on")
-            .and_then(|v| v.as_str());
         let (start, end, center_idx) = if let Some(uuid) = center_on {
-            let idx = messages
+            let matching: Vec<_> = messages
                 .iter()
-                .position(|m| {
-                    m.uuid
+                .enumerate()
+                .filter_map(|(index, message)| {
+                    message
+                        .uuid
                         .starts_with(uuid)
+                        .then_some(index)
                 })
-                .unwrap_or(0);
+                .collect();
+            let idx = match matching.as_slice() {
+                [index] => *index,
+                [] => anyhow::bail!("Message ID '{}' was not found in this session", uuid),
+                _ => anyhow::bail!(
+                    "Ambiguous message ID prefix '{}'; use the complete ID from search",
+                    uuid
+                ),
+            };
             let context_c = args
                 .get("-C")
                 .and_then(|v| v.as_u64())
@@ -892,7 +974,7 @@ impl McpServer {
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(50) as usize;
+                .unwrap_or(20) as usize;
             let start = offset.min(total);
             let end = (offset + limit).min(total);
             (start, end, None)
@@ -990,9 +1072,22 @@ impl McpServer {
         }
 
         messages.sort_by_key(|m| m.sequence_num);
+        let center_on = args
+            .get("center_on")
+            .and_then(|value| value.as_str());
+        let include_tools = json_strings(args.get("include")).contains(&"tools".to_string());
         let messages: Vec<_> = messages
             .into_iter()
-            .filter(|m| m.is_displayable())
+            .filter(|message| {
+                message.is_displayable()
+                    && (include_tools
+                        || !message.is_tool_record()
+                        || center_on.is_some_and(|uuid| {
+                            message
+                                .uuid
+                                .starts_with(uuid)
+                        }))
+            })
             .collect();
 
         let total = messages.len();
@@ -1004,19 +1099,27 @@ impl McpServer {
         let truncate_length = args
             .get("truncate_length")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+            .unwrap_or(500) as usize;
 
-        let center_on = args
-            .get("center_on")
-            .and_then(|v| v.as_str());
         let (start, end, center_idx) = if let Some(uuid) = center_on {
-            let idx = messages
+            let matching: Vec<_> = messages
                 .iter()
-                .position(|m| {
-                    m.uuid
+                .enumerate()
+                .filter_map(|(index, message)| {
+                    message
+                        .uuid
                         .starts_with(uuid)
+                        .then_some(index)
                 })
-                .unwrap_or(0);
+                .collect();
+            let idx = match matching.as_slice() {
+                [index] => *index,
+                [] => anyhow::bail!("Message ID '{}' was not found in this session", uuid),
+                _ => anyhow::bail!(
+                    "Ambiguous message ID prefix '{}'; use the complete ID from search",
+                    uuid
+                ),
+            };
             let context_c = args
                 .get("-C")
                 .and_then(|v| v.as_u64())
@@ -1040,7 +1143,7 @@ impl McpServer {
             let limit = args
                 .get("limit")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(50) as usize;
+                .unwrap_or(20) as usize;
             let start = offset.min(total);
             let end = (offset + limit).min(total);
             (start, end, None)
@@ -1124,10 +1227,20 @@ impl McpServer {
             .get("session_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
+        let source = args
+            .get("source")
+            .and_then(|value| value.as_str())
+            .map(str::parse::<crate::shared::Source>)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error))?;
 
         // Get session stats for size estimation
         let search_engine = &self.search_engine;
-        let messages = search_engine.get_session_messages(session_id)?;
+        let messages = if let Some(source) = source {
+            search_engine.get_conversation_messages(source, session_id)?
+        } else {
+            search_engine.get_session_messages(session_id)?
+        };
         let msg_count = messages.len();
         let total_chars: usize = messages
             .iter()
@@ -1145,6 +1258,9 @@ impl McpServer {
             ""
         };
 
+        let source_arg = source
+            .map(|source| format!(", source=\"{}\"", source.as_str()))
+            .unwrap_or_default();
         let output = format!(
             r#"Session {session_id}: {msg_count} messages, ~{approx_tokens} tokens{size_note}
 
@@ -1152,7 +1268,7 @@ Task(
   subagent_type: "general-purpose",
   model: "haiku",
   prompt: "Summarize session {session_id}:
-1. Call get_session_messages(session_id=\"{session_id}\")
+1. Call get_session_messages(session_id=\"{session_id}\"{source_arg})
 2. If output ends with '+more: offset=N', call again with that offset
 3. Repeat until no '+more' appears
 4. Return a concise summary: topic, key decisions, outcome"
@@ -1171,6 +1287,18 @@ Task(
     async fn tool_get_messages(&self, args: Option<Value>) -> Result<Value> {
         let args = args.unwrap_or_default();
         let ids = json_strings(args.get("ids"));
+        let source = args
+            .get("source")
+            .and_then(|value| value.as_str())
+            .map(str::parse::<crate::shared::Source>)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str);
+        if session_id.is_some() && source.is_none() {
+            anyhow::bail!("'session_id' requires 'source' for exact message retrieval");
+        }
 
         if ids.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
@@ -1183,7 +1311,14 @@ Task(
         }
 
         let search_engine = &self.search_engine;
-        let messages = search_engine.get_messages_by_uuid(&ids)?;
+        let messages = match (source, session_id) {
+            (Some(source), Some(session_id)) => {
+                search_engine.get_messages_by_uuid_for_conversation(source, session_id, &ids)?
+            }
+            (Some(source), None) => search_engine.get_messages_by_uuid_for_source(source, &ids)?,
+            (None, None) => search_engine.get_messages_by_uuid(&ids)?,
+            (None, Some(_)) => unreachable!("validated above"),
+        };
 
         if messages.is_empty() {
             return Ok(serde_json::to_value(CallToolResponse {
@@ -1198,13 +1333,11 @@ Task(
         let mut output = String::new();
         for msg in &messages {
             output.push_str(&format!(
-                "💬 {} 📅 {} [{}]\n{}\n\n",
-                &msg.uuid[..8.min(
-                    msg.uuid
-                        .len()
-                )],
+                "💬 {} 📅 {} [{}:{}]\n{}\n\n",
+                short_uuid(&msg.uuid),
                 msg.timestamp
                     .format("%Y-%m-%d %H:%M"),
+                msg.source,
                 msg.message_type,
                 msg.content
             ));
@@ -1284,6 +1417,7 @@ Task(
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
+            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()
@@ -1295,6 +1429,7 @@ Task(
             let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
+            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()

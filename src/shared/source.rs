@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+use super::models::ConversationEntry;
+use anyhow::Result;
 
 /// Identifies the conversation client/source
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -35,13 +39,88 @@ impl Source {
 
     /// Construct a unique document key scoped by source
     pub fn doc_key(&self, session_id: &str, message_id: &str) -> String {
-        format!("{}:{}:{}", self.as_str(), session_id, message_id)
+        format!("{}\0{}\0{}", self.as_str(), session_id, message_id)
     }
 
     /// Construct a unique session/conversation key scoped by source
     pub fn conversation_key(&self, session_id: &str) -> String {
-        format!("{}:{}", self.as_str(), session_id)
+        format!("{}\0{}", self.as_str(), session_id)
     }
+
+    /// Construct a unique key for a source artifact such as a JSONL file.
+    pub fn artifact_key(&self, artifact: &str) -> String {
+        format!("{}\0{}", self.as_str(), artifact)
+    }
+}
+
+/// Source-specific discovery and parsing boundary used by the shared cache and
+/// indexing pipeline. Navigation remains separate from read-only ingestion.
+pub trait ConversationSource: Sync {
+    fn source(&self) -> Source;
+    fn parser_version(&self) -> u32;
+    fn discover(&self) -> Result<Vec<PathBuf>>;
+    fn parse(&self, path: &Path, full_content: bool) -> Result<Vec<ConversationEntry>>;
+}
+
+struct ClaudeSource;
+struct CodexSource;
+
+impl ConversationSource for ClaudeSource {
+    fn source(&self) -> Source {
+        Source::Claude
+    }
+
+    fn parser_version(&self) -> u32 {
+        1
+    }
+
+    fn discover(&self) -> Result<Vec<PathBuf>> {
+        super::path_utils::discover_claude_jsonl_files()
+    }
+
+    fn parse(&self, path: &Path, full_content: bool) -> Result<Vec<ConversationEntry>> {
+        let parser = if full_content {
+            super::parser::JsonlParser::with_full_content()
+        } else {
+            super::parser::JsonlParser::default()
+        };
+        parser.parse_file(path)
+    }
+}
+
+impl ConversationSource for CodexSource {
+    fn source(&self) -> Source {
+        Source::Codex
+    }
+
+    fn parser_version(&self) -> u32 {
+        // v2 adds canonical response_item tool calls and textual tool outputs.
+        2
+    }
+
+    fn discover(&self) -> Result<Vec<PathBuf>> {
+        super::path_utils::discover_codex_jsonl_files()
+    }
+
+    fn parse(&self, path: &Path, _full_content: bool) -> Result<Vec<ConversationEntry>> {
+        // Codex preserves complete textual records in both the search index and
+        // source-backed reads; retrieval controls bound returned context.
+        super::codex_parser::CodexParser::new().parse_file(path)
+    }
+}
+
+static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
+static CODEX_SOURCE: CodexSource = CodexSource;
+
+pub fn conversation_source(source: Source) -> &'static dyn ConversationSource {
+    match source {
+        Source::Claude => &CLAUDE_SOURCE,
+        Source::Codex => &CODEX_SOURCE,
+    }
+}
+
+pub fn conversation_sources() -> [&'static dyn ConversationSource; 2] {
+    [&CLAUDE_SOURCE, &CODEX_SOURCE]
 }
 
 impl fmt::Display for Source {
@@ -97,7 +176,11 @@ mod tests {
 
     #[test]
     fn test_source_keys() {
-        assert_eq!(Source::Claude.conversation_key("sess1"), "claude:sess1");
-        assert_eq!(Source::Codex.doc_key("sess2", "msg1"), "codex:sess2:msg1");
+        assert_eq!(Source::Claude.conversation_key("sess1"), "claude\0sess1");
+        assert_eq!(Source::Codex.doc_key("sess2", "msg1"), "codex\0sess2\0msg1");
+        assert_eq!(
+            Source::Codex.artifact_key("/tmp/session.jsonl"),
+            "codex\0/tmp/session.jsonl"
+        );
     }
 }
