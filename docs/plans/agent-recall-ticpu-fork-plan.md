@@ -433,6 +433,56 @@ expansion without tying the engine to one client.
 User example and mechanics: Asking `What did we decide last week?` is more likely
 to trigger a search automatically, without explicitly naming an MCP tool.
 
+### S13. Indexing trigger strategy and session-start hooks
+
+Recommendation: Evaluate and define a clear triggering policy (session-start hooks vs JIT-on-search vs background file watcher).
+
+Why it matters: Passive transcript indexing is only effective if newly written
+conversation history becomes searchable when needed. Originally, the ticpu Rust
+engine only auto-indexes at MCP server startup or when the agent explicitly calls
+the `reindex` MCP tool (or prints a passive "index is stale" warning). Because MCP
+server processes stay alive in the background across long client sessions,
+transcripts created or updated during a session can remain stale until server
+restart or explicit reindexing.
+
+Legacy Python behavior & reasoning: The previous Python implementation supported
+an optional `SessionStart` client hook in `.claude/settings.json` (running
+`agent-recall index --quiet`) so that every newly initiated client session
+automatically ran incremental indexing before queries were made. It also embraced
+Just-In-Time (JIT) indexing prior to search execution to guarantee fresh results.
+
+Questions to resolve:
+1. Should `agent-recall install` automatically configure client session hooks
+   (e.g., Claude Code `SessionStart` hook) to run `agent-recall index` at session launch?
+2. Should `agent-recall` perform automatic JIT incremental reindexing transparently
+   before executing a `search` tool call when stale transcripts are detected,
+   rather than just returning a text notice?
+3. Should a background filesystem watcher (e.g. using Rust's `notify` crate) be
+   introduced in the MCP server process to auto-index active JSONL transcripts
+   in real time as they are updated?
+4. What are the performance and write-lock contention tradeoffs (e.g., Tantivy
+   index write locks during active search or simultaneous transcript append operations)?
+
+### S14. Evaluation of default retrieval context and truncation budgets
+
+Recommendation: Create a dedicated issue titled *"Evaluate default retrieval context and truncation budgets"* to benchmark context window sizes against message truncation strategies.
+
+Why it matters: The current engine defaults to returning wider message windows (e.g., ±10 messages) paired with per-message character caps (e.g., 500 characters). However, severe character truncation often clips key technical details like SQL queries, CLI commands, code snippets, or error tracebacks mid-line. Returning a narrower context window (e.g., ±2 messages) containing full, un-truncated message content may yield higher evidence quality and precision while maintaining similar or smaller token budgets.
+
+Benchmark parameters to compare:
+- Centered context windows: ±2, ±5, ±10 messages.
+- Sequential paging windows: 5, 10, 20 messages.
+- Truncation caps: 200, 300, 500 characters vs. full un-truncated message rendering.
+
+Target recovery tasks:
+- Recovering an architectural decision, CLI command, SQL query, exact tool output, and stack trace / error trace.
+
+Benchmark evaluation metrics:
+- Successful evidence recovery rate (zero detail loss).
+- Total returned characters and token overhead.
+- Required follow-up tool calls for context expansion.
+- Response latency.
+
 ## Legacy concept status
 
 - Implemented: S1 multi-source boundary; S2 union search and source-qualified
@@ -442,7 +492,7 @@ to trigger a search automatically, without explicitly naming an MCP tool.
   regression tests.
 - Open decisions: S4 structured, client-neutral MCP response objects; S7 shared
   redaction before durable indexing and true opt-in thinking; S11 SDK-backed
-  MCP; and S12 an optional retrieval skill.
+  MCP; S12 an optional retrieval skill; S13 indexing trigger strategy and session-start hooks; and S14 retrieval context and truncation budget evaluation.
 - The completed local readiness verification does not close the fresh-client
   end-to-end acceptance work in Phase 8.
 
