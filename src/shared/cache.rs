@@ -1,12 +1,12 @@
 use super::indexer::SearchIndexer;
 use super::models::MessageType;
-use super::parser::JsonlParser;
+use super::source::Source;
 use super::utils::file_mtime;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -30,6 +30,16 @@ pub struct FileMetadata {
     pub modified: DateTime<Utc>,
     pub indexed_at: DateTime<Utc>,
     pub entry_count: usize,
+    #[serde(default)]
+    pub source: Source,
+    #[serde(default)]
+    pub parser_version: u32,
+    #[serde(default)]
+    pub conversation_counts: HashMap<String, usize>,
+}
+
+fn parser_version(source: Source) -> u32 {
+    super::source::conversation_source(source).parser_version()
 }
 
 pub struct CacheManager {
@@ -59,6 +69,9 @@ impl CacheManager {
     pub fn needs_indexing(&self, file_path: &Path) -> Result<bool> {
         let file_size = fs::metadata(file_path)?.len();
         let file_modified = file_mtime(file_path)?;
+        let source = super::path_utils::source_for_jsonl_path(file_path).ok_or_else(|| {
+            anyhow::anyhow!("No conversation source owns {}", file_path.display())
+        })?;
 
         match self
             .metadata
@@ -67,7 +80,10 @@ impl CacheManager {
         {
             Some(cached) => {
                 // Check if file has changed using mtime and size
-                Ok(cached.size != file_size || cached.modified != file_modified)
+                Ok(cached.size != file_size
+                    || cached.modified != file_modified
+                    || cached.source != source
+                    || cached.parser_version != parser_version(source))
             }
             None => Ok(true), // File not indexed yet
         }
@@ -78,8 +94,6 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let parser = JsonlParser::default();
-
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
@@ -109,6 +123,7 @@ impl CacheManager {
         // Phase 2 (parallel): parse all files concurrently.
         struct ParsedFile {
             path: PathBuf,
+            source: Source,
             file_size: u64,
             file_modified: DateTime<Utc>,
             entries: Vec<super::models::ConversationEntry>,
@@ -122,9 +137,26 @@ impl CacheManager {
                     .ok()?
                     .len();
                 let file_modified = file_mtime(&file_path).ok()?;
-                match parser.parse_file(&file_path) {
+                let source = match super::path_utils::source_for_jsonl_path(&file_path) {
+                    Some(source) => source,
+                    None => {
+                        warn!("No source adapter owns {}", file_path.display());
+                        return None;
+                    }
+                };
+                let entries_res =
+                    super::source::conversation_source(source).parse(&file_path, false);
+                match entries_res {
+                    Ok(entries) if entries.is_empty() => {
+                        warn!(
+                            "{} parsed successfully but yielded no recognized messages; leaving it uncached",
+                            file_path.display()
+                        );
+                        None
+                    }
                     Ok(entries) => Some(ParsedFile {
                         path: file_path,
+                        source,
                         file_size,
                         file_modified,
                         entries,
@@ -139,45 +171,47 @@ impl CacheManager {
 
         // Phase 3 (serial): feed into IndexWriter and update cache metadata.
         let mut files_processed = 0;
-        let mut total_entries = 0;
-
         for parsed_file in parsed {
-            let entry_count = parsed_file
+            let source_adapter = super::source::conversation_source(parsed_file.source);
+            // Apply source-owned storage policy at the last boundary before
+            // Tantivy. Codex reference payloads must remain only in the source
+            // rollout; indexing and reference retrieval intentionally share the
+            // same parser so record identity and sequencing cannot drift.
+            let reference_count = parsed_file
                 .entries
-                .len();
-            total_entries += entry_count;
+                .iter()
+                .filter(|entry| source_adapter.is_reference_record(entry))
+                .count();
+            let entries: Vec<_> = parsed_file
+                .entries
+                .into_iter()
+                .filter(|entry| source_adapter.is_primary_index_record(entry))
+                .collect();
+            let entry_count = entries.len();
+            indexer.delete_artifact(parsed_file.source, &parsed_file.path)?;
 
-            if entry_count > 0 {
-                if let Some(first) = parsed_file
-                    .entries
-                    .first()
+            let mut conversation_counts = HashMap::new();
+            for entry in &entries {
+                if matches!(
+                    entry.message_type,
+                    MessageType::User | MessageType::Assistant
+                ) && !entry.is_tool_record()
                 {
-                    indexer.delete_session(&first.session_id)?;
-                    self.metadata
-                        .session_counts
-                        .remove(&first.session_id);
+                    *conversation_counts
+                        .entry(
+                            entry
+                                .source
+                                .conversation_key(&entry.session_id),
+                        )
+                        .or_insert(0) += 1;
                 }
-
-                for entry in &parsed_file.entries {
-                    if matches!(
-                        entry.message_type,
-                        MessageType::User | MessageType::Assistant
-                    ) {
-                        *self
-                            .metadata
-                            .session_counts
-                            .entry(
-                                entry
-                                    .session_id
-                                    .clone(),
-                            )
-                            .or_insert(0) += 1;
-                    }
-                }
-
-                indexer.index_conversations(parsed_file.entries)?;
-                info!("  Indexed {} entries", entry_count);
             }
+
+            indexer.index_conversations(entries)?;
+            info!(
+                "  Indexed {} entries; kept {} references source-backed",
+                entry_count, reference_count
+            );
 
             self.metadata
                 .indexed_files
@@ -189,6 +223,9 @@ impl CacheManager {
                         modified: parsed_file.file_modified,
                         indexed_at: Utc::now(),
                         entry_count,
+                        source: parsed_file.source,
+                        parser_version: parser_version(parsed_file.source),
+                        conversation_counts,
                     },
                 );
             files_processed += 1;
@@ -198,22 +235,83 @@ impl CacheManager {
             indexer.commit()?;
         }
 
-        self.metadata
-            .total_entries += total_entries as u64;
+        self.refresh_derived_metadata();
         self.metadata
             .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
 
         if files_processed > 0 {
             info!(
-                "Incremental indexing complete: {} files processed, {} entries added",
-                files_processed, total_entries
+                "Incremental indexing complete: {} files processed, {} entries indexed",
+                files_processed,
+                self.metadata
+                    .total_entries
             );
         } else {
             info!("No files needed indexing");
         }
 
         Ok(())
+    }
+
+    /// Remove indexed artifacts absent from a complete discovery result. This
+    /// must not be used for targeted single-artifact refreshes.
+    pub fn remove_missing_files(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        discovered_files: &[PathBuf],
+    ) -> Result<usize> {
+        let discovered: HashSet<_> = discovered_files
+            .iter()
+            .collect();
+        let missing: Vec<_> = self
+            .metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, _)| !path.exists() || !discovered.contains(path))
+            .map(|(path, metadata)| (path.clone(), metadata.source))
+            .collect();
+
+        for (path, source) in &missing {
+            indexer.delete_artifact(*source, path)?;
+            self.metadata
+                .indexed_files
+                .remove(path);
+            debug!("Removed missing source artifact: {}", path.display());
+        }
+
+        if !missing.is_empty() {
+            indexer.commit()?;
+            self.refresh_derived_metadata();
+            self.save_metadata()?;
+        }
+        Ok(missing.len())
+    }
+
+    fn refresh_derived_metadata(&mut self) {
+        self.metadata
+            .total_entries = self
+            .metadata
+            .indexed_files
+            .values()
+            .map(|file| file.entry_count as u64)
+            .sum();
+        self.metadata
+            .session_counts
+            .clear();
+        for file in self
+            .metadata
+            .indexed_files
+            .values()
+        {
+            for (conversation_key, count) in &file.conversation_counts {
+                *self
+                    .metadata
+                    .session_counts
+                    .entry(conversation_key.clone())
+                    .or_insert(0) += count;
+            }
+        }
     }
 
     pub fn clear_cache(&mut self) -> Result<()> {

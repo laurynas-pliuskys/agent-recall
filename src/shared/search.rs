@@ -1,5 +1,6 @@
 use super::models::{SearchQuery, SearchResult, SortOrder};
 use super::path_utils::{session_jsonl_path, short_uuid};
+use super::source::Source;
 use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::Result;
@@ -77,6 +78,10 @@ pub struct SearchEngine {
     sequence_num_field: Field,
     is_sidechain_field: Field,
     agent_id_field: Field,
+    source_field: Field,
+    conversation_key_field: Field,
+    document_key_field: Field,
+    source_artifact_field: Field,
     interaction_counts: HashMap<String, usize>,
 }
 
@@ -105,6 +110,10 @@ impl SearchEngine {
         let sequence_num_field = schema.get_field("sequence_num")?;
         let is_sidechain_field = schema.get_field("is_sidechain")?;
         let agent_id_field = schema.get_field("agent_id")?;
+        let source_field = schema.get_field("source")?;
+        let conversation_key_field = schema.get_field("conversation_key")?;
+        let document_key_field = schema.get_field("document_key")?;
+        let source_artifact_field = schema.get_field("source_artifact")?;
 
         Ok(Self {
             index,
@@ -125,6 +134,10 @@ impl SearchEngine {
             sequence_num_field,
             is_sidechain_field,
             agent_id_field,
+            source_field,
+            conversation_key_field,
+            document_key_field,
+            source_artifact_field,
             interaction_counts: session_counts,
         })
     }
@@ -170,6 +183,12 @@ impl SearchEngine {
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
+        if let Some(ref source_filter) = query.source_filter {
+            let term = Term::from_field_text(self.source_field, source_filter.as_str());
+            let source_query = TermQuery::new(term, IndexRecordOption::Basic);
+            final_query_parts.push((Occur::Must, Box::new(source_query)));
+        }
+
         let final_query = if final_query_parts.len() > 1 {
             Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
         } else {
@@ -185,6 +204,13 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+
+            // Apply source filter
+            if let Some(ref source_filter) = query.source_filter
+                && result.source != *source_filter
+            {
+                continue;
+            }
 
             // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
             if let Some(ref session_filter) = query.session_filter
@@ -227,6 +253,19 @@ impl SearchEngine {
         context_before: usize,
         context_after: usize,
     ) -> Result<Vec<SearchResultWithContext>> {
+        self.search_with_context_options(query, context_before, context_after, false)
+    }
+
+    /// Search with a context window measured in records that will actually be
+    /// returned. By default technical tool records remain searchable but do not
+    /// consume the neighboring conversational-message budget.
+    pub fn search_with_context_options(
+        &self,
+        query: SearchQuery,
+        context_before: usize,
+        context_after: usize,
+        include_tools: bool,
+    ) -> Result<Vec<SearchResultWithContext>> {
         // Save sort order before consuming query
         let sort_by = query
             .sort_by
@@ -238,7 +277,8 @@ impl SearchEngine {
         let mut results_with_context = Vec::new();
 
         for match_result in matches {
-            let session_messages = self.get_session_messages(&match_result.session_id)?;
+            let session_messages =
+                self.get_conversation_messages(match_result.source, &match_result.session_id)?;
 
             // If we can't get session messages, still return the match with just itself as context
             if session_messages.is_empty() {
@@ -255,10 +295,12 @@ impl SearchEngine {
             let mut session_messages = session_messages;
             session_messages.sort_by_key(|m| m.sequence_num);
 
-            // Count only displayable messages (consistent with get_session_messages)
+            // Count records visible under the selected retrieval policy.
             let total_session_messages = session_messages
                 .iter()
-                .filter(|m| m.is_displayable())
+                .filter(|message| {
+                    message.is_displayable() && (include_tools || !message.is_tool_record())
+                })
                 .count();
 
             // Find the matching message index by UUID or by content/timestamp as fallback
@@ -273,26 +315,29 @@ impl SearchEngine {
                 });
 
             if let Some(idx) = match_idx {
-                // Get context window around the match
-                let start = idx.saturating_sub(context_before);
-                let end = (idx + context_after + 1).min(session_messages.len());
-
-                // Filter to displayable messages only, track new match index
-                let mut context_messages = Vec::new();
-                let mut new_match_idx = 0;
-                for (i, msg) in session_messages[start..end]
+                let visible_indices: Vec<_> = session_messages
                     .iter()
                     .enumerate()
-                {
-                    if msg.is_displayable() {
-                        if start + i == idx {
-                            new_match_idx = context_messages.len();
-                        }
-                        context_messages.push(msg.clone());
-                    }
-                }
+                    .filter_map(|(message_idx, message)| {
+                        (message.is_displayable()
+                            && (include_tools || !message.is_tool_record() || message_idx == idx))
+                            .then_some(message_idx)
+                    })
+                    .collect();
+                let visible_match_idx = visible_indices
+                    .iter()
+                    .position(|message_idx| *message_idx == idx)
+                    .unwrap_or(0);
+                let start = visible_match_idx.saturating_sub(context_before);
+                let end = (visible_match_idx + context_after + 1).min(visible_indices.len());
+                let context_messages: Vec<_> = visible_indices[start..end]
+                    .iter()
+                    .map(|message_idx| session_messages[*message_idx].clone())
+                    .collect();
+                let mut new_match_idx = visible_match_idx - start;
 
                 // If no context found (e.g., all filtered out), use match as its own context
+                let mut context_messages = context_messages;
                 if context_messages.is_empty() {
                     context_messages.push(match_result.clone());
                     new_match_idx = 0;
@@ -347,6 +392,56 @@ impl SearchEngine {
 
     /// Get all messages for a session
     pub fn get_session_messages(&self, session_id: &str) -> Result<Vec<SearchResult>> {
+        let results = self.get_session_messages_matching(None, session_id)?;
+        let sources: std::collections::HashSet<_> = results
+            .iter()
+            .map(|result| result.source)
+            .collect();
+        if sources.len() > 1 {
+            let mut source_names: Vec<_> = sources
+                .into_iter()
+                .map(|source| source.as_str())
+                .collect();
+            source_names.sort_unstable();
+            anyhow::bail!(
+                "Ambiguous session ID '{}'; select a source: {}",
+                session_id,
+                source_names.join(", ")
+            );
+        }
+        Ok(results)
+    }
+
+    /// Get all messages for an exact source-qualified conversation.
+    pub fn get_conversation_messages(
+        &self,
+        source: Source,
+        session_id: &str,
+    ) -> Result<Vec<SearchResult>> {
+        let searcher = self
+            .reader
+            .searcher();
+        let query = TermQuery::new(
+            Term::from_field_text(
+                self.conversation_key_field,
+                &source.conversation_key(session_id),
+            ),
+            IndexRecordOption::Basic,
+        );
+        let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
+        let mut results = Vec::with_capacity(top_docs.len());
+        for (score, doc_address) in top_docs {
+            results.push(self.doc_to_result(&searcher.doc(doc_address)?, score, "")?);
+        }
+        results.sort_by_key(|result| result.sequence_num);
+        Ok(results)
+    }
+
+    fn get_session_messages_matching(
+        &self,
+        source: Option<Source>,
+        session_id: &str,
+    ) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
             .searcher();
@@ -368,7 +463,17 @@ impl SearchEngine {
                 )
             })
             .collect();
-        let query = BooleanQuery::new(segment_queries);
+        let mut query_parts = segment_queries;
+        if let Some(source) = source {
+            query_parts.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.source_field, source.as_str()),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        let query = BooleanQuery::new(query_parts);
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
 
@@ -376,10 +481,11 @@ impl SearchEngine {
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
             // Filter to session_id match - support prefix matching for short IDs
-            if result.session_id == session_id
+            if (result.session_id == session_id
                 || result
                     .session_id
-                    .starts_with(session_id)
+                    .starts_with(session_id))
+                && source.is_none_or(|expected| result.source == expected)
             {
                 results.push(result);
             }
@@ -393,6 +499,50 @@ impl SearchEngine {
 
     /// Get specific messages by their UUIDs
     pub fn get_messages_by_uuid(&self, uuids: &[String]) -> Result<Vec<SearchResult>> {
+        self.get_messages_by_uuid_matching(None, uuids)
+    }
+
+    pub fn get_messages_by_uuid_for_source(
+        &self,
+        source: Source,
+        uuids: &[String],
+    ) -> Result<Vec<SearchResult>> {
+        self.get_messages_by_uuid_matching(Some(source), uuids)
+    }
+
+    /// Retrieve exact records using the same source/session/message identity
+    /// used for deduplication. This is the safest follow-up to a search result.
+    pub fn get_messages_by_uuid_for_conversation(
+        &self,
+        source: Source,
+        session_id: &str,
+        uuids: &[String],
+    ) -> Result<Vec<SearchResult>> {
+        let searcher = self
+            .reader
+            .searcher();
+        let mut results = Vec::new();
+        for uuid in uuids {
+            let query = TermQuery::new(
+                Term::from_field_text(self.document_key_field, &source.doc_key(session_id, uuid)),
+                IndexRecordOption::Basic,
+            );
+            let docs = searcher.search(&query, &TopDocs::with_limit(1))?;
+            if let Some((score, address)) = docs
+                .into_iter()
+                .next()
+            {
+                results.push(self.doc_to_result(&searcher.doc(address)?, score, "")?);
+            }
+        }
+        Ok(results)
+    }
+
+    fn get_messages_by_uuid_matching(
+        &self,
+        source: Option<Source>,
+        uuids: &[String],
+    ) -> Result<Vec<SearchResult>> {
         let searcher = self
             .reader
             .searcher();
@@ -403,7 +553,7 @@ impl SearchEngine {
             let segments: Vec<_> = uuid
                 .split('-')
                 .collect();
-            let segment_queries: Vec<_> = segments
+            let mut segment_queries: Vec<_> = segments
                 .iter()
                 .map(|seg| {
                     let term = Term::from_field_text(self.uuid_field, seg);
@@ -414,10 +564,20 @@ impl SearchEngine {
                     )
                 })
                 .collect();
+            if let Some(source) = source {
+                segment_queries.push((
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(self.source_field, source.as_str()),
+                        IndexRecordOption::Basic,
+                    )),
+                ));
+            }
             let query = BooleanQuery::new(segment_queries);
 
             let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
 
+            let mut matches = Vec::new();
             for (score, doc_address) in top_docs {
                 let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
                 // Exact match or prefix match
@@ -426,9 +586,30 @@ impl SearchEngine {
                         .uuid
                         .starts_with(uuid)
                 {
-                    results.push(result);
-                    break;
+                    matches.push(result);
                 }
+            }
+            let sources: std::collections::HashSet<_> = matches
+                .iter()
+                .map(|result| result.source)
+                .collect();
+            if source.is_none() && sources.len() > 1 {
+                anyhow::bail!(
+                    "Ambiguous message ID '{}'; select source=claude or source=codex",
+                    uuid
+                );
+            }
+            if matches.len() > 1 {
+                anyhow::bail!(
+                    "Ambiguous message ID '{}'; provide source and session_id for exact retrieval",
+                    uuid
+                );
+            }
+            if let Some(result) = matches
+                .into_iter()
+                .next()
+            {
+                results.push(result);
             }
         }
 
@@ -553,15 +734,31 @@ impl SearchEngine {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        let interaction_count = self.get_interaction_count(&session_id);
+        let source_str = doc
+            .get_first(self.source_field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let source = source_str
+            .parse()
+            .unwrap_or(super::source::Source::Claude);
+
+        let source_artifact = doc
+            .get_first(self.source_artifact_field)
+            .and_then(|value| value.as_str())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+
+        let interaction_count = self.get_interaction_count(source, &session_id);
 
         Ok(SearchResult {
+            source,
             uuid,
             parent_uuid,
             content,
             project,
             project_path,
             session_id,
+            source_artifact,
             timestamp,
             score,
             snippet,
@@ -628,9 +825,9 @@ impl SearchEngine {
         snippet
     }
 
-    fn get_interaction_count(&self, session_id: &str) -> usize {
+    fn get_interaction_count(&self, source: Source, session_id: &str) -> usize {
         self.interaction_counts
-            .get(session_id)
+            .get(&source.conversation_key(session_id))
             .copied()
             .unwrap_or(0)
     }
@@ -704,22 +901,8 @@ fn filter_content(s: &str, opts: &DisplayOptions) -> Option<String> {
     if !opts.include_thinking && s.starts_with("[thinking]") {
         return None;
     }
-    if !opts.include_tools
-        && (s.starts_with('[') && s.contains(']') && !s.starts_with("[result]"))
-        && !s.starts_with("[thinking]")
-    {
-        // Looks like a tool call [ToolName] {...}
-        if let Some(bracket_end) = s.find(']') {
-            let prefix = &s[1..bracket_end];
-            // Tool names are typically CamelCase or contain underscores/colons
-            if prefix
-                .chars()
-                .any(|c| c.is_uppercase() || c == '_' || c == ':')
-                && !prefix.contains(' ')
-            {
-                return None;
-            }
-        }
+    if !opts.include_tools && super::models::looks_like_tool_record(s) {
+        return None;
     }
     Some(s.to_string())
 }
@@ -748,7 +931,18 @@ impl SearchResultWithContext {
             .matched_message
             .session_id;
 
-        let jsonl_path = session_jsonl_path(project_path_full, session_id).unwrap_or_default();
+        let jsonl_path = if self
+            .matched_message
+            .source_artifact
+            .as_os_str()
+            .is_empty()
+        {
+            session_jsonl_path(project_path_full, session_id).unwrap_or_default()
+        } else {
+            self.matched_message
+                .source_artifact
+                .clone()
+        };
         let jsonl_path_str = jsonl_path.to_string_lossy();
 
         let short_session = short_uuid(session_id);
@@ -762,8 +956,10 @@ impl SearchResultWithContext {
         let session_link = file_hyperlink(&jsonl_path_str, short_session);
 
         output.push_str(&format!(
-            "{}. 📁 {} 🗒️ {} ({} msgs) 💬 {} 📅 {}\n",
+            "{}. [{}] 📁 {} 🗒️ {} ({} msgs) 💬 {} 📅 {}\n",
             index + 1,
+            self.matched_message
+                .source,
             path_link,
             session_link,
             self.total_session_messages,
@@ -771,6 +967,12 @@ impl SearchResultWithContext {
             self.matched_message
                 .timestamp
                 .format("%Y-%m-%d %H:%M"),
+        ));
+        output.push_str(&format!(
+            "↪ {}\n",
+            self.matched_message
+                .source
+                .resume_hint(session_id)
         ));
 
         let mut tags = Vec::new();
@@ -809,7 +1011,9 @@ impl SearchResultWithContext {
             .enumerate()
         {
             // Filter content based on options
-            if filter_content(&msg.content, opts).is_none() {
+            // A tool record that caused the hit is evidence, not optional
+            // context. Hide only neighboring tool noise unless requested.
+            if i != self.match_index && filter_content(&msg.content, opts).is_none() {
                 continue;
             }
 
@@ -929,12 +1133,15 @@ mod tests {
         seq: usize,
     ) -> ConversationEntry {
         ConversationEntry {
+            source: crate::shared::Source::Claude,
             uuid: uuid.to_string(),
             parent_uuid: None,
             session_id: session_id.to_string(),
+            source_artifact: format!("/fixtures/claude/{session_id}.jsonl").into(),
             project_path: "/test/project".to_string(),
             timestamp: Utc::now(),
             message_type: msg_type,
+            record_kind: crate::shared::RecordKind::Conversation,
             content: content.to_string(),
             model: None,
             cwd: None,
@@ -1039,12 +1246,15 @@ mod tests {
         cwd: &str,
     ) -> ConversationEntry {
         ConversationEntry {
+            source: crate::shared::Source::Claude,
             uuid: uuid.to_string(),
             parent_uuid: None,
             session_id: session_id.to_string(),
+            source_artifact: format!("/fixtures/claude/{session_id}.jsonl").into(),
             project_path: project_name.to_string(),
             timestamp: Utc::now(),
             message_type: msg_type,
+            record_kind: crate::shared::RecordKind::Conversation,
             content: content.to_string(),
             model: None,
             cwd: Some(cwd.to_string()),
@@ -1357,6 +1567,113 @@ mod tests {
         assert_eq!(
             displayable_count, 3,
             "Should have 3 displayable messages (User, Assistant, Summary)"
+        );
+    }
+
+    #[test]
+    fn compact_context_skips_neighboring_tools_but_keeps_a_tool_match() {
+        let temp_dir = TempDir::new().unwrap();
+        let session_id = "tool-context-session";
+        let entries = vec![
+            make_entry(
+                "uuid-user-before",
+                session_id,
+                MessageType::User,
+                "Check how production access works",
+                0,
+            ),
+            make_entry(
+                "uuid-tool-call",
+                session_id,
+                MessageType::Assistant,
+                "[tool:database.query]\nSELECT access_method FROM audit_log",
+                1,
+            ),
+            make_entry(
+                "uuid-tool-result",
+                session_id,
+                MessageType::Assistant,
+                "[tool_result:database.query]\nservice-account",
+                2,
+            ),
+            make_entry(
+                "uuid-assistant",
+                session_id,
+                MessageType::Assistant,
+                "The evidence shows a service account.",
+                3,
+            ),
+            make_entry(
+                "uuid-user-after",
+                session_id,
+                MessageType::User,
+                "Record that decision.",
+                4,
+            ),
+        ];
+        let mut indexer = SearchIndexer::new(temp_dir.path()).unwrap();
+        indexer
+            .index_conversations(entries)
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
+        drop(indexer);
+
+        let engine = SearchEngine::new(temp_dir.path(), HashMap::new()).unwrap();
+        let conversational = engine
+            .search_with_context(
+                SearchQuery {
+                    text: "evidence".to_string(),
+                    limit: 10,
+                    ..Default::default()
+                },
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            conversational[0]
+                .context_messages
+                .len(),
+            3
+        );
+        assert_eq!(
+            conversational[0].context_messages[0].uuid,
+            "uuid-user-before"
+        );
+        assert_eq!(
+            conversational[0].context_messages[2].uuid,
+            "uuid-user-after"
+        );
+
+        let technical = engine
+            .search_with_context(
+                SearchQuery {
+                    text: "SELECT".to_string(),
+                    limit: 10,
+                    ..Default::default()
+                },
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            technical[0]
+                .matched_message
+                .uuid,
+            "uuid-tool-call"
+        );
+        assert!(
+            technical[0]
+                .format_compact(0)
+                .contains("SELECT access_method")
+        );
+        assert_eq!(
+            technical[0]
+                .context_messages
+                .len(),
+            3
         );
     }
 }

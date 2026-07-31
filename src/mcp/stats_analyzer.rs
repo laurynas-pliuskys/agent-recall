@@ -35,6 +35,7 @@ pub async fn handle_get_stats(
     // Get search results for analysis
     let query = SearchQuery {
         text: "*".to_string(),
+        source_filter: None,
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 1000, // Get a large sample for stats

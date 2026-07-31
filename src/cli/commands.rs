@@ -20,6 +20,9 @@ pub enum CliCommands {
     Search {
         /// Search query
         query: String,
+        /// Filter by source client (claude or codex)
+        #[arg(long)]
+        source: Option<String>,
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
@@ -60,6 +63,22 @@ pub enum CliCommands {
         #[arg(long, default_value = "300")]
         truncate: usize,
     },
+    /// Search source-backed technical references within one conversation
+    References {
+        /// Session ID selected from primary conversation search
+        session_id: String,
+        /// Technical query to find in tool calls/results
+        query: String,
+        /// Source client (Codex references are supported now; Claude is deferred)
+        #[arg(long, default_value = "codex")]
+        source: String,
+        /// Results limit
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Characters shown per reference (0 = full content)
+        #[arg(long, default_value = "300")]
+        truncate: usize,
+    },
     /// Show technology topics and their usage across conversations
     Topics {
         /// Filter by project
@@ -79,6 +98,9 @@ pub enum CliCommands {
     Session {
         /// Session ID to view
         session_id: String,
+        /// Source for an otherwise ambiguous session ID
+        #[arg(long)]
+        source: Option<String>,
         /// Show full content (not just snippets)
         #[arg(long)]
         full: bool,
@@ -199,6 +221,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
         CliCommands::Mcp => unreachable!("MCP handled in main"),
         CliCommands::Search {
             query,
+            source,
             project,
             session,
             limit,
@@ -218,8 +241,14 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             shared::auto_index(&index_path)?;
             let cb = ctx_before.unwrap_or(context);
             let ca = ctx_after.unwrap_or(context);
+            let source_filter = source
+                .as_deref()
+                .map(|s| s.parse::<shared::Source>())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?;
             let opts = SearchOpts {
                 query,
+                source: source_filter,
                 project,
                 session,
                 limit,
@@ -244,6 +273,27 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             };
             search_conversations(&index_path, opts)?;
         }
+        CliCommands::References {
+            session_id,
+            query,
+            source,
+            limit,
+            truncate,
+        } => {
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
+            shared::auto_index(&index_path)?;
+            search_references(
+                &index_path,
+                source
+                    .parse::<shared::Source>()
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                &session_id,
+                &query,
+                limit,
+                truncate,
+            )?;
+        }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
@@ -258,6 +308,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
         }
         CliCommands::Session {
             session_id,
+            source,
             full,
             center,
             context,
@@ -274,6 +325,11 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             view_session(
                 &index_path,
                 session_id,
+                source
+                    .as_deref()
+                    .map(str::parse::<shared::Source>)
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!(error))?,
                 max_content,
                 center,
                 ctx_before,
@@ -388,6 +444,7 @@ fn clear_cache(index_path: &Path) -> Result<()> {
 
 struct SearchOpts {
     query: String,
+    source: Option<shared::Source>,
     project: Option<String>,
     session: Option<String>,
     limit: usize,
@@ -443,6 +500,7 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
 
     let query = SearchQuery {
         text: opts.query,
+        source_filter: opts.source,
         project_filter: opts.project,
         session_filter: opts.session,
         limit: opts.limit * 3,
@@ -451,8 +509,13 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         before: opts.before,
     };
 
-    let results =
-        search_engine.search_with_context(query, opts.context_before, opts.context_after)?;
+    let results = search_engine.search_with_context_options(
+        query,
+        opts.context_before,
+        opts.context_after,
+        opts.display
+            .include_tools,
+    )?;
 
     let mut session_seen = std::collections::HashSet::new();
     let filtered: Vec<_> = results
@@ -478,8 +541,11 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
             }
             session_seen.insert(
                 r.matched_message
-                    .session_id
-                    .clone(),
+                    .source
+                    .conversation_key(
+                        &r.matched_message
+                            .session_id,
+                    ),
             )
         })
         .take(opts.limit)
@@ -510,6 +576,45 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
     Ok(())
 }
 
+fn search_references(
+    index_path: &Path,
+    source: shared::Source,
+    session_id: &str,
+    query: &str,
+    limit: usize,
+    truncate_length: usize,
+) -> Result<()> {
+    if source != shared::Source::Codex {
+        anyhow::bail!(
+            "Source-backed reference search is currently enabled only for Codex; Claude tool evidence remains in the primary index"
+        );
+    }
+    if !index_path.exists() {
+        anyhow::bail!("Index not found. Run 'agent-recall index rebuild' first");
+    }
+
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache
+            .get_session_counts()
+            .clone(),
+    )?;
+    let artifact = shared::conversation_artifact(&search_engine, source, session_id)?
+        .ok_or_else(|| anyhow::anyhow!("Codex conversation '{}' was not found", session_id))?;
+    if !artifact.exists() {
+        anyhow::bail!("Source artifact is unavailable: {}", artifact.display());
+    }
+
+    let matches =
+        shared::search_conversation_references(source, &artifact, session_id, query, limit)?;
+    println!(
+        "{}",
+        shared::format_reference_matches(source, session_id, query, &matches, truncate_length,)
+    );
+    Ok(())
+}
+
 fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) -> Result<()> {
     if !index_path.exists() {
         println!("Index not found. Please run 'agent-recall index' first.");
@@ -527,6 +632,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Get all conversations to analyze topics
     let query = SearchQuery {
         text: "*".to_string(), // Match everything
+        source_filter: None,
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 100_000,
@@ -680,6 +786,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     // Get conversation stats
     let query = SearchQuery {
         text: "*".to_string(),
+        source_filter: None,
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 1_000_000,
@@ -796,19 +903,13 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 fn view_session(
     index_path: &Path,
     session_id: String,
+    source: Option<shared::Source>,
     truncate_length: usize,
     center_on: Option<String>,
     context_before: usize,
     context_after: usize,
 ) -> Result<()> {
-    // Read from JSONL directly for full-fidelity content
-    let entries = if let Some(jsonl_path) = shared::find_session_jsonl(&session_id)? {
-        shared::parser::JsonlParser::with_full_content().parse_file(&jsonl_path)?
-    } else if index_path.exists() {
-        // Fallback to Tantivy index (content may be truncated from indexing)
-        eprintln!(
-            "Warning: JSONL file not found, falling back to index (content may be truncated)"
-        );
+    let entries = if index_path.exists() {
         let cache = CacheManager::new(index_path)?;
         let search_engine = SearchEngine::new(
             index_path,
@@ -816,15 +917,30 @@ fn view_session(
                 .get_session_counts()
                 .clone(),
         )?;
-        let results = search_engine.get_session_messages(&session_id)?;
-        return view_session_from_results(
-            results,
-            &session_id,
-            truncate_length,
-            center_on,
-            context_before,
-            context_after,
-        );
+        let results = if let Some(source) = source {
+            search_engine.get_conversation_messages(source, &session_id)?
+        } else {
+            search_engine.get_session_messages(&session_id)?
+        };
+        if let Some(first) = results.first()
+            && first
+                .source_artifact
+                .exists()
+        {
+            shared::conversation_source(first.source).parse(&first.source_artifact, true)?
+        } else {
+            eprintln!(
+                "Warning: source artifact not found, falling back to index (content may be truncated)"
+            );
+            return view_session_from_results(
+                results,
+                &session_id,
+                truncate_length,
+                center_on,
+                context_before,
+                context_after,
+            );
+        }
     } else {
         println!("No JSONL file or index found for session: {session_id}");
         return Ok(());

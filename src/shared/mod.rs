@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod codex_parser;
 pub mod config;
 pub mod indexer;
 pub mod lock;
@@ -6,15 +7,20 @@ pub mod metadata;
 pub mod models;
 pub mod parser;
 pub mod path_utils;
+pub mod references;
 pub mod search;
+pub mod source;
 pub mod terminal;
 pub mod utils;
 
 pub use cache::*;
+pub use codex_parser::*;
 pub use config::*;
 pub use indexer::*;
 pub use lock::*;
 pub use models::*;
 pub use path_utils::*;
+pub use references::*;
 pub use search::*;
+pub use source::*;
 pub use utils::*;

@@ -1,11 +1,17 @@
 use super::config::get_config;
+use super::source::Source;
 use anyhow::Result;
 use glob::glob;
 use std::path::{Path, PathBuf};
 
-/// Extract first 8 characters of a UUID for display
+/// Compact ordinary UUIDs for display. Codex typed record IDs share long
+/// prefixes, so keeping those IDs whole is necessary for exact retrieval.
 pub fn short_uuid(uuid: &str) -> &str {
-    &uuid[..8.min(uuid.len())]
+    if uuid.contains('_') {
+        uuid
+    } else {
+        &uuid[..8.min(uuid.len())]
+    }
 }
 
 /// Replace home directory with ~ for display
@@ -66,12 +72,100 @@ pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-/// Discover all JSONL session files under `.claude/projects/`.
+/// Codex roots selected explicitly through `CODEX_HOME`, or inferred for the
+/// current OS user. Never scan every Windows profile visible from WSL.
+fn codex_home_dirs() -> Vec<PathBuf> {
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        return vec![PathBuf::from(codex_home)];
+    }
+
+    let mut homes = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        homes.push(home.join(".codex"));
+
+        if let Some(user_name) = home
+            .file_name()
+            .and_then(|name| name.to_str())
+            && let Ok(windows_users) = std::fs::read_dir("/mnt/c/Users")
+        {
+            for entry in windows_users.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(user_name)
+                {
+                    let windows_home = entry
+                        .path()
+                        .join(".codex");
+                    if !homes.contains(&windows_home) {
+                        homes.push(windows_home);
+                    }
+                }
+            }
+        }
+    }
+    homes
+}
+
+/// Find active and archived Codex session directories.
+pub fn codex_sessions_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for codex_home in codex_home_dirs() {
+        for child in ["sessions", "archived_sessions"] {
+            let session_dir = codex_home.join(child);
+            if session_dir.exists() && !dirs.contains(&session_dir) {
+                dirs.push(session_dir);
+            }
+        }
+    }
+    dirs
+}
+
+/// Identify the adapter responsible for a discovered transcript path.
+pub fn source_for_jsonl_path(path: &Path) -> Option<Source> {
+    if projects_dir().is_ok_and(|projects| path.starts_with(projects)) {
+        return Some(Source::Claude);
+    }
+    if codex_sessions_dirs()
+        .iter()
+        .any(|sessions| path.starts_with(sessions))
+    {
+        return Some(Source::Codex);
+    }
+    None
+}
+
+/// Discover all JSONL session files under both `.claude/projects/` and `.codex/sessions/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
-    let pattern = projects_dir()?.join("**/*.jsonl");
-    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?
-        .flatten()
-        .collect();
+    let mut files = Vec::new();
+
+    for source in super::source::conversation_sources() {
+        files.extend(source.discover()?);
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+pub fn discover_claude_jsonl_files() -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if let Ok(p_dir) = projects_dir() {
+        let pattern = p_dir.join("**/*.jsonl");
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            files.extend(entries.flatten());
+        }
+    }
+    Ok(files)
+}
+
+pub fn discover_codex_jsonl_files() -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for codex_dir in codex_sessions_dirs() {
+        let pattern = codex_dir.join("**/*.jsonl");
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            files.extend(entries.flatten());
+        }
+    }
     Ok(files)
 }
 
@@ -144,6 +238,10 @@ mod tests {
     #[test]
     fn test_short_uuid() {
         assert_eq!(short_uuid("12345678-abcd-efgh"), "12345678");
+        assert_eq!(
+            short_uuid("ctc_0d7d56b337092000000000000000000000000001"),
+            "ctc_0d7d56b337092000000000000000000000000001"
+        );
         assert_eq!(short_uuid("abc"), "abc");
         assert_eq!(short_uuid(""), "");
     }

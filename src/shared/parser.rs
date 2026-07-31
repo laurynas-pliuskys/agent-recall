@@ -85,9 +85,13 @@ impl JsonlParser {
 
             match serde_json::from_str::<RawJsonlMessage>(line) {
                 Ok(raw) => {
-                    if let Some(entry) =
-                        self.parse_raw_message(raw, &project_name, sequence_counter, &file_agent_id)
-                    {
+                    if let Some(entry) = self.parse_raw_message(
+                        raw,
+                        &project_name,
+                        sequence_counter,
+                        &file_agent_id,
+                        path,
+                    ) {
                         entries.push(entry);
                         sequence_counter += 1;
                     }
@@ -107,6 +111,7 @@ impl JsonlParser {
         fallback_project: &str,
         sequence_num: usize,
         file_agent_id: &Option<String>,
+        source_artifact: &Path,
     ) -> Option<ConversationEntry> {
         let msg_type = raw
             .message_type
@@ -202,12 +207,15 @@ impl JsonlParser {
         };
 
         Some(ConversationEntry {
+            source: super::source::Source::Claude,
             uuid,
             parent_uuid: raw.parent_uuid,
             session_id,
+            source_artifact: source_artifact.to_path_buf(),
             project_path,
             timestamp,
             message_type,
+            record_kind: super::models::RecordKind::Conversation,
             content,
             model,
             cwd: raw.cwd,
@@ -434,7 +442,7 @@ mod tests {
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
         let entry = parser
-            .parse_raw_message(raw, "test", 0, &None)
+            .parse_raw_message(raw, "test", 0, &None, Path::new("/test/session.jsonl"))
             .unwrap();
 
         assert_eq!(entry.uuid, "abc123");
@@ -447,7 +455,8 @@ mod tests {
         let json = r#"{"type":"file-history-snapshot","messageId":"xyz"}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
-        let entry = parser.parse_raw_message(raw, "test", 0, &None);
+        let entry =
+            parser.parse_raw_message(raw, "test", 0, &None, Path::new("/test/session.jsonl"));
 
         assert!(entry.is_none());
     }
@@ -458,7 +467,7 @@ mod tests {
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
         let entry = parser
-            .parse_raw_message(raw, "test", 0, &None)
+            .parse_raw_message(raw, "test", 0, &None, Path::new("/test/session.jsonl"))
             .unwrap();
 
         assert_eq!(entry.content, "Here is my response");
@@ -471,7 +480,7 @@ mod tests {
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
         let parser = JsonlParser::default();
         let entry = parser
-            .parse_raw_message(raw, "test", 0, &None)
+            .parse_raw_message(raw, "test", 0, &None, Path::new("/test/session.jsonl"))
             .unwrap();
 
         assert!(
@@ -496,7 +505,7 @@ mod tests {
         let raw: RawJsonlMessage = serde_json::from_str(&json).unwrap();
         let parser = JsonlParser::default();
         let entry = parser
-            .parse_raw_message(raw, "test", 0, &None)
+            .parse_raw_message(raw, "test", 0, &None, Path::new("/test/session.jsonl"))
             .unwrap();
 
         // Should be truncated to ~get_config().limits.tool_result_max_chars + "[result] " prefix + "…"

@@ -1,5 +1,7 @@
+use super::source::Source;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Raw JSONL message structure for parsing Claude Code logs
 #[derive(Debug, Deserialize, Clone)]
@@ -44,12 +46,19 @@ pub enum ContentBlock {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConversationEntry {
+    #[serde(default)]
+    pub source: Source,
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub session_id: String,
+    /// Source-native artifact used to retrieve the original conversation.
+    #[serde(default)]
+    pub source_artifact: PathBuf,
     pub project_path: String,
     pub timestamp: DateTime<Utc>,
     pub message_type: MessageType,
+    #[serde(default)]
+    pub record_kind: RecordKind,
     pub content: String,
     pub model: Option<String>,
     pub cwd: Option<String>,
@@ -79,6 +88,21 @@ impl ConversationEntry {
     pub fn project_path_display(&self) -> String {
         super::path_utils::home_to_tilde(&self.project_path)
     }
+
+    pub fn is_tool_record(&self) -> bool {
+        matches!(
+            self.record_kind,
+            RecordKind::ToolCall | RecordKind::ToolResult
+        ) || looks_like_tool_record(&self.content)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordKind {
+    #[default]
+    Conversation,
+    ToolCall,
+    ToolResult,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -112,6 +136,7 @@ pub enum SortOrder {
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: String,
+    pub source_filter: Option<Source>,
     pub project_filter: Option<String>,
     pub session_filter: Option<String>,
     pub limit: usize,
@@ -122,12 +147,14 @@ pub struct SearchQuery {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
+    pub source: Source,
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub content: String,
     pub project: String,
     pub project_path: String,
     pub session_id: String,
+    pub source_artifact: PathBuf,
     pub timestamp: DateTime<Utc>,
     pub score: f32,
     pub snippet: String,
@@ -170,6 +197,10 @@ impl SearchResult {
         super::path_utils::home_to_tilde(&self.project_path)
     }
 
+    pub fn is_tool_record(&self) -> bool {
+        looks_like_tool_record(&self.content)
+    }
+
     /// Short display name for message type (User, AI, Sum, Sys)
     pub fn role_display(&self) -> &'static str {
         match self
@@ -182,4 +213,29 @@ impl SearchResult {
             _ => "?",
         }
     }
+}
+
+/// Identify records whose entire payload is a tool call/result. Assistant text
+/// that merely contains an embedded tool block remains ordinary conversation.
+pub fn looks_like_tool_record(content: &str) -> bool {
+    let content = content.trim_start();
+    if content.starts_with("[tool:")
+        || content.starts_with("[tool_result:")
+        || content.starts_with("[result]")
+        || content.starts_with("[error]")
+    {
+        return true;
+    }
+
+    let Some(bracket_end) = content.find(']') else {
+        return false;
+    };
+    if !content.starts_with('[') {
+        return false;
+    }
+    let prefix = &content[1..bracket_end];
+    !prefix.contains(' ')
+        && prefix
+            .chars()
+            .any(|character| character.is_uppercase() || character == '_' || character == ':')
 }
