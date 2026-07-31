@@ -1,7 +1,9 @@
 # Agent Recall: ticpu Fork and Replacement Plan
 
-Status: Phase 6 complete
+Status: Phase 8 in progress — local Claude and Codex readiness verified; fresh client-session end-to-end validation pending
 Date: 2026-07-31  
+Codex integration merge: `37fd824`
+Next release target: `2.1.0` (unreleased)
 Legacy repository: `laurynas-pliuskys/agent-recall-python-legacy`  
 Replacement repository: `laurynas-pliuskys/agent-recall`  
 Upstream: `ticpu/claude-conversation-search-mcp`  
@@ -24,6 +26,19 @@ issues, and prior decisions remain available.
   its Python implementation.
 - Add Codex as the first second source and proof that the new adapter boundary
   is real.
+- Treat Claude Code and Codex as supported transcript sources in one shared
+  Tantivy index, with source-qualified identities throughout.
+- Keep Codex tool calls and results source-backed in the original rollout:
+  global discovery indexes conversational turns only, then selected-session
+  reference search retrieves technical evidence on demand.
+- Keep Claude's inherited capped tool-content indexing unchanged until its
+  migration is explicitly decided.
+- Treat the local MCP registrations and direct wire validation as verified
+  readiness, not proof of a fresh-client installation flow. Fresh Claude Code
+  and Codex session validation remains a Phase 8 requirement.
+- Target `2.1.0` for the first release containing the completed Codex
+  integration and compatibility work. Phase 4's `2.0.0` rename remains the
+  historical completed version bump.
 - Do not revive legacy Gemini support unless a current, stable transcript source
   becomes available.
 - Treat each proposed legacy concept as an independent decision and issue.
@@ -222,32 +237,53 @@ only in a Codex tool record cannot be used for global conversation discovery.
 Claude's capped tool-input/result indexing remains unchanged and is deferred to
 a separate migration decision.
 
-### Phase 7: Selectively port approved legacy concepts
+### Phase 7: Selectively port approved legacy concepts — partially complete
 
-Review every candidate in the section below. Create a separate issue for every
-accepted item. Port behavior and test fixtures rather than merging the unrelated
-Python and Rust histories.
+The implemented and open candidate decisions are recorded in the legacy-concept
+status summary below. Implemented behavior and test fixtures were ported without
+merging the unrelated Python and Rust histories. Each remaining accepted concept
+requires its own decision and issue before implementation.
 
-### Phase 8: User migration and compatibility
+### Phase 8: User migration and compatibility — in progress
 
-1. State clearly that the old SQLite index will not be reused.
-2. Rebuild the new Tantivy index from original transcript files.
-3. Document MCP configuration changes and the new binary path.
-4. Decide whether to import old configuration values or simply explain their
-   replacements.
-5. Detect the old cache/config location and print a non-destructive migration
-   notice rather than silently deleting it.
-6. Test installation and use from both Claude Code and Codex.
+Completed local readiness verification on 2026-07-31:
+
+- The Codex integration was merged as `37fd824`.
+- The current tree passed its checks: 35 unit tests and 2 integration tests.
+- Direct MCP JSON-RPC wire validation passed.
+- The release binary was installed at `~/.local/bin/agent-recall`.
+- MCP registrations are present for both Claude Code and Codex.
+- A full Tantivy rebuild processed 71 transcript files and indexed 4,492 primary
+  conversation entries.
+- A source-filtered Codex search succeeded against the rebuilt local index.
+
+Remaining work, in priority order:
+
+1. Verify a fresh installation and MCP registration from each client, without
+   relying on the existing local registrations.
+2. Start fresh Claude Code and Codex sessions and prove that each client can
+   call the MCP server, search both sources, retrieve source-correct context,
+   and reindex after a new transcript is written.
+3. Extend the completed Claude Code and Codex registration/binary-path
+   documentation with migration-specific rebuild and upgrade guidance.
+4. State clearly that the old SQLite index is not reused and that Tantivy is
+   rebuilt from original transcript files.
+5. Decide whether old configuration values are imported or replaced with
+   documented equivalents.
+6. Detect the prior cache/config location and print a non-destructive migration
+   notice rather than deleting it.
 
 ### Phase 9: Release and cutover
 
-1. Publish a prerelease.
-2. Run end-to-end tests against real Claude and Codex sessions.
-3. Verify fresh installation and upgrade documentation.
-4. Recreate or transfer selected legacy issues.
-5. Point the legacy README to the replacement.
-6. Publish the stable release.
-7. Archive `agent-recall-python-legacy`.
+1. Complete the remaining Phase 8 fresh-client end-to-end checks and migration
+   guidance.
+2. Build a fresh `2.1.0` release artifact.
+3. Publish that artifact as a `2.1.0` prerelease.
+4. Verify fresh installation and upgrade from the prerelease artifact.
+5. Recreate or transfer selected legacy issues.
+6. Point the legacy README to the replacement.
+7. Publish the `2.1.0` stable release.
+8. Archive `agent-recall-python-legacy`.
 
 ## Legacy concepts worth reviewing
 
@@ -395,6 +431,19 @@ expansion without tying the engine to one client.
 User example and mechanics: Asking `What did we decide last week?` is more likely
 to trigger a search automatically, without explicitly naming an MCP tool.
 
+## Legacy concept status
+
+- Implemented: S1 multi-source boundary; S2 union search and source-qualified
+  identities; S3 Codex transcript research and adapter; S5 fragment-first
+  retrieval; S6 Codex runtime-context filtering; S8 per-artifact parse-failure
+  isolation; S9 source-specific resume hints; and S10 multi-source fixtures and
+  regression tests.
+- Open decisions: S4 structured, client-neutral MCP response objects; S7 shared
+  redaction before durable indexing and true opt-in thinking; S11 SDK-backed
+  MCP; and S12 an optional retrieval skill.
+- The completed local readiness verification does not close the fresh-client
+  end-to-end acceptance work in Phase 8.
+
 ## Things to discard by default
 
 - The Python indexing and search engine.
@@ -411,19 +460,22 @@ to trigger a search automatically, without explicitly naming an MCP tool.
 
 ## Final acceptance checklist
 
-- Applicable upstream license is unambiguous.
-- Legacy repository and issues remain accessible under the explicit archive URL.
-- New repository is a real fork connected to ticpu upstream.
-- Upstream baseline tests pass before and after branding changes.
-- Claude parity is preserved.
-- Codex and Claude union search works end to end.
-- Source filters and source-qualified IDs work.
-- A broken source cannot block healthy sources.
-- Tool content is redacted before indexing.
-- Thinking indexing is opt-in.
-- MCP responses are structured and source-neutral.
-- Old SQLite data is left intact and the migration path is documented.
-- Fresh install and upgrade flows work from Claude Code and Codex.
+- [ ] Applicable upstream license is unambiguous.
+- [ ] Legacy repository and issues remain accessible under the explicit archive
+  URL.
+- [x] New repository is a real fork connected to ticpu upstream.
+- [x] Upstream baseline checks passed before branding, and the current tree's
+  35 unit tests and 2 integration tests pass after the Codex work.
+- [ ] Claude parity is preserved through a fresh client-session test.
+- [ ] Codex and Claude union search works end to end from fresh client sessions.
+- [x] Source filters and source-qualified IDs work.
+- [x] A malformed source artifact is isolated so other artifacts continue to
+  index.
+- [ ] Tool content is redacted before indexing.
+- [ ] Thinking indexing is opt-in.
+- [ ] MCP responses are structured and source-neutral.
+- [ ] Old SQLite data is left intact and the migration path is documented.
+- [ ] Fresh install and upgrade flows work from Claude Code and Codex.
 
 ## References
 

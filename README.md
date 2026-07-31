@@ -69,10 +69,24 @@ This tool indexes **Claude Code and Codex conversations across all projects** an
 ```bash
 cargo build --release
 cp target/release/agent-recall ~/.local/bin/
+# Registers the user-scoped Claude Code MCP server.
 agent-recall install
+# Register the same stdio server with Codex.
+codex mcp add agent-recall -- ~/.local/bin/agent-recall mcp
 ```
 
-Verify: `claude mcp list` should show `agent-recall`.
+`agent-recall install` currently registers **Claude Code only**. It does not
+modify Codex configuration.
+
+Verify the registrations sequentially (each client may start the server while
+checking it):
+
+```bash
+claude mcp get agent-recall
+claude mcp list
+codex mcp get agent-recall
+codex mcp list
+```
 
 ### Basic Usage
 
@@ -140,12 +154,30 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
    cargo build --release
    ```
 
-2. **Configure Claude Code / MCP CLI**:
+2. **Configure Claude Code**:
    ```bash
-   claude mcp add agent-recall ~/.local/bin/agent-recall mcp
+   # Convenience command: registers Claude Code at user scope only.
+   agent-recall install
+
+   # Or, instead of the command above, register Claude Code explicitly.
+   claude mcp add -s user agent-recall ~/.local/bin/agent-recall mcp
    ```
 
-3. **Use within sessions**:
+3. **Configure Codex**:
+   ```bash
+   codex mcp add agent-recall -- ~/.local/bin/agent-recall mcp
+   ```
+
+   `agent-recall install` does not register Codex, so run the Codex command
+   separately. The explicit `mcp` argument starts the MCP server mode.
+
+4. **Verify one client at a time**:
+   ```bash
+   claude mcp get agent-recall
+   codex mcp get agent-recall
+   ```
+
+5. **Use within sessions**:
    - "Search my previous conversations about Rust async"
    - "Find where we discussed error handling"
 
