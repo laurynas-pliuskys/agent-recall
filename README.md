@@ -67,16 +67,27 @@ This tool indexes **Claude Code and Codex conversations across all projects** an
 ### Installation
 
 ```bash
-cargo build --release
-cp target/release/agent-recall ~/.local/bin/
-# Registers the user-scoped Claude Code MCP server.
+# Install the binary from this checkout.
+cargo install --locked --path .
+
+# Register both Claude Code and Codex (the default is --client all).
 agent-recall install
-# Register the same stdio server with Codex.
-codex mcp add agent-recall -- ~/.local/bin/agent-recall mcp
+
+# Build the initial local conversation index.
+agent-recall index rebuild
 ```
 
-`agent-recall install` currently registers **Claude Code only**. It does not
-modify Codex configuration.
+To register just one client, use `agent-recall install --client claude` or
+`agent-recall install --client codex`.
+
+### Codex-only workstation
+
+```bash
+cargo install --locked --path .
+agent-recall install --client codex
+agent-recall index rebuild
+codex mcp get agent-recall
+```
 
 Verify the registrations sequentially (each client may start the server while
 checking it):
@@ -92,7 +103,7 @@ codex mcp list
 
 ```bash
 # Index your conversations (run this first time)
-agent-recall index
+agent-recall index rebuild
 
 # Search for anything
 agent-recall search "kubernetes"
@@ -112,14 +123,15 @@ agent-recall references <session-id> "SELECT access_method"
 ## CLI Reference
 
 ### `agent-recall index`
-Build or update the search index.
+Show index status. Use `agent-recall index rebuild` to build the initial index
+or force a full rebuild.
 
 ```bash
-agent-recall index              # Build/update index
+agent-recall index              # Show index status
 agent-recall index rebuild      # Force full rebuild (recreates index)
 ```
 
-**What it does:**
+**What `index rebuild` does:**
 - Scans Claude Code and Codex transcript directories for `*.jsonl` files
 - Parses conversation entries with timestamps, content, and metadata
 - Builds full-text search index using Tantivy
@@ -149,35 +161,46 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
 
 ### Setup
 
-1. **Build the binary**:
+1. **Install from this checkout**:
    ```bash
-   cargo build --release
+   cargo install --locked --path .
    ```
 
-2. **Configure Claude Code**:
+2. **Register both clients and build the initial index**:
    ```bash
-   # Convenience command: registers Claude Code at user scope only.
+   # Equivalent to: agent-recall install --client all
    agent-recall install
-
-   # Or, instead of the command above, register Claude Code explicitly.
-   claude mcp add -s user agent-recall ~/.local/bin/agent-recall mcp
+   agent-recall index rebuild
    ```
 
-3. **Configure Codex**:
+3. **Register one client only, if needed**:
    ```bash
-   codex mcp add agent-recall -- ~/.local/bin/agent-recall mcp
+   agent-recall install --client claude
+   agent-recall install --client codex
    ```
-
-   `agent-recall install` does not register Codex, so run the Codex command
-   separately. The explicit `mcp` argument starts the MCP server mode.
 
 4. **Verify one client at a time**:
    ```bash
    claude mcp get agent-recall
+   claude mcp list
    codex mcp get agent-recall
+   codex mcp list
    ```
 
-5. **Use within sessions**:
+5. **Manual fallback**:
+
+   If client registration is managed outside this command, point each client at
+   the installed binary and retain the explicit `mcp` server invocation:
+
+   ```bash
+   claude mcp add -s user agent-recall ~/.cargo/bin/agent-recall mcp
+   codex mcp add agent-recall -- ~/.cargo/bin/agent-recall mcp
+   ```
+
+   Replace `~/.cargo/bin/agent-recall` if Cargo uses a custom installation
+   directory.
+
+6. **Use within sessions**:
    - "Search my previous conversations about Rust async"
    - "Find where we discussed error handling"
 

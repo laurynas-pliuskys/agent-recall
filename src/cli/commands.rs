@@ -1,10 +1,11 @@
 use crate::cli::index;
 use crate::shared::{self, CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{NaiveDate, TimeZone, Utc};
 use clap::{Subcommand, ValueEnum};
 use regex::Regex;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -137,9 +138,12 @@ pub enum CliCommands {
     },
     /// Run as MCP server
     Mcp,
-    /// Register with Claude MCP
+    /// Register with Claude Code and/or Codex MCP
     Install {
-        /// Use project scope instead of user scope
+        /// MCP client to configure
+        #[arg(long, value_enum, default_value_t = InstallClient::All)]
+        client: InstallClient,
+        /// Use project scope for Claude Code; Codex configuration remains global
         #[arg(long)]
         project: bool,
     },
@@ -165,6 +169,48 @@ pub enum SortArg {
 pub enum IncludeArg {
     Thinking,
     Tools,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InstallClient {
+    #[default]
+    All,
+    Claude,
+    Codex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallTarget {
+    Claude,
+    Codex,
+}
+
+impl InstallTarget {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    fn executable(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InstallCommand {
+    program: &'static str,
+    args: Vec<OsString>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ClientInstallPlan {
+    target: InstallTarget,
+    commands: Vec<InstallCommand>,
 }
 
 impl From<SortArg> for SortOrder {
@@ -350,35 +396,196 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 CacheAction::Clear => clear_cache(&index_path)?,
             }
         }
-        CliCommands::Install { project } => install(project)?,
+        CliCommands::Install { client, project } => install(client, project)?,
     }
 
     Ok(())
 }
 
-fn install(project_scope: bool) -> Result<()> {
+fn install(client: InstallClient, project_scope: bool) -> Result<()> {
     use std::process::Command;
 
     let exe = std::env::current_exe()?;
-    let exe_path = exe
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid exe path"))?;
-    let scope = if project_scope { "project" } else { "user" };
-
-    let _ = Command::new("claude")
-        .args(["mcp", "remove", "-s", scope, "agent-recall"])
-        .status();
-
-    let status = Command::new("claude")
-        .args(["mcp", "add", "-s", scope, "agent-recall", exe_path])
-        .status()?;
-
-    if !status.success() {
-        anyhow::bail!("claude mcp add failed");
+    let plans = install_plan(client, project_scope, &exe)?;
+    if client == InstallClient::All && project_scope {
+        println!("Codex MCP configuration is global; --project applies only to Claude Code.");
     }
 
-    println!("{}", exe_path);
+    let mut installed = 0;
+    for plan in plans {
+        match run_install_plan(&plan, |command| {
+            Command::new(command.program)
+                .args(&command.args)
+                .status()
+        })? {
+            InstallAttempt::Installed => {
+                installed += 1;
+                match plan.target {
+                    InstallTarget::Claude => {
+                        let scope = if project_scope { "project" } else { "user" };
+                        println!("Registered agent-recall with Claude Code ({scope} scope).");
+                    }
+                    InstallTarget::Codex => {
+                        println!("Registered agent-recall with Codex (global scope).");
+                    }
+                }
+            }
+            InstallAttempt::MissingExecutable if client == InstallClient::All => {
+                println!(
+                    "Skipping {}: '{}' was not found on PATH.",
+                    plan.target
+                        .display_name(),
+                    plan.target
+                        .executable()
+                );
+            }
+            InstallAttempt::MissingExecutable => {
+                anyhow::bail!(
+                    "{} executable '{}' was not found on PATH",
+                    plan.target
+                        .display_name(),
+                    plan.target
+                        .executable()
+                );
+            }
+        }
+    }
+
+    if installed == 0 {
+        anyhow::bail!(
+            "No supported MCP client executable was found on PATH (looked for 'claude' and 'codex')"
+        );
+    }
+
+    println!("agent-recall MCP command: {} mcp", exe.display());
     Ok(())
+}
+
+enum InstallAttempt {
+    Installed,
+    MissingExecutable,
+}
+
+fn install_plan(
+    client: InstallClient,
+    project_scope: bool,
+    exe: &Path,
+) -> Result<Vec<ClientInstallPlan>> {
+    if client == InstallClient::Codex && project_scope {
+        anyhow::bail!(
+            "--project is only supported for Claude Code; Codex MCP configuration is global"
+        );
+    }
+
+    let targets: &[InstallTarget] = match client {
+        InstallClient::All => &[InstallTarget::Claude, InstallTarget::Codex],
+        InstallClient::Claude => &[InstallTarget::Claude],
+        InstallClient::Codex => &[InstallTarget::Codex],
+    };
+    let scope = if project_scope { "project" } else { "user" };
+
+    Ok(targets
+        .iter()
+        .map(|target| {
+            let commands = match target {
+                InstallTarget::Claude => vec![
+                    InstallCommand {
+                        program: target.executable(),
+                        args: vec![
+                            "mcp".into(),
+                            "remove".into(),
+                            "-s".into(),
+                            scope.into(),
+                            "agent-recall".into(),
+                        ],
+                    },
+                    InstallCommand {
+                        program: target.executable(),
+                        args: vec![
+                            "mcp".into(),
+                            "add".into(),
+                            "-s".into(),
+                            scope.into(),
+                            "agent-recall".into(),
+                            "--".into(),
+                            exe.as_os_str()
+                                .to_os_string(),
+                            "mcp".into(),
+                        ],
+                    },
+                ],
+                InstallTarget::Codex => vec![
+                    InstallCommand {
+                        program: target.executable(),
+                        args: vec!["mcp".into(), "remove".into(), "agent-recall".into()],
+                    },
+                    InstallCommand {
+                        program: target.executable(),
+                        args: vec![
+                            "mcp".into(),
+                            "add".into(),
+                            "agent-recall".into(),
+                            "--".into(),
+                            exe.as_os_str()
+                                .to_os_string(),
+                            "mcp".into(),
+                        ],
+                    },
+                ],
+            };
+            ClientInstallPlan {
+                target: *target,
+                commands,
+            }
+        })
+        .collect())
+}
+
+fn run_install_plan<F>(plan: &ClientInstallPlan, mut run: F) -> Result<InstallAttempt>
+where
+    F: FnMut(&InstallCommand) -> std::io::Result<std::process::ExitStatus>,
+{
+    let remove = &plan.commands[0];
+    match run(remove) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(InstallAttempt::MissingExecutable);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to run {} MCP removal command",
+                    plan.target
+                        .display_name()
+                )
+            });
+        }
+    }
+
+    let add = &plan.commands[1];
+    let status = match run(add) {
+        Ok(status) => status,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(InstallAttempt::MissingExecutable);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to run {} MCP registration command",
+                    plan.target
+                        .display_name()
+                )
+            });
+        }
+    };
+    if !status.success() {
+        anyhow::bail!(
+            "{} MCP registration command failed with {status}",
+            plan.target
+                .display_name()
+        );
+    }
+    Ok(InstallAttempt::Installed)
 }
 
 fn show_cache_info(index_path: &Path) -> Result<()> {
@@ -1336,4 +1543,115 @@ fn summarize_session(index_path: &Path, session_id: String) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    fn rendered(plan: &[ClientInstallPlan]) -> Vec<(&'static str, Vec<Vec<String>>)> {
+        plan.iter()
+            .map(|client| {
+                (
+                    client
+                        .target
+                        .executable(),
+                    client
+                        .commands
+                        .iter()
+                        .map(|command| {
+                            command
+                                .args
+                                .iter()
+                                .map(|arg| {
+                                    arg.to_string_lossy()
+                                        .into_owned()
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn all_clients_plan_uses_explicit_mcp_commands() {
+        let plan = install_plan(InstallClient::All, false, Path::new("/tmp/agent-recall")).unwrap();
+
+        assert_eq!(
+            rendered(&plan),
+            vec![
+                (
+                    "claude",
+                    vec![
+                        args(&["mcp", "remove", "-s", "user", "agent-recall"]),
+                        args(&[
+                            "mcp",
+                            "add",
+                            "-s",
+                            "user",
+                            "agent-recall",
+                            "--",
+                            "/tmp/agent-recall",
+                            "mcp",
+                        ]),
+                    ],
+                ),
+                (
+                    "codex",
+                    vec![
+                        args(&["mcp", "remove", "agent-recall"]),
+                        args(&[
+                            "mcp",
+                            "add",
+                            "agent-recall",
+                            "--",
+                            "/tmp/agent-recall",
+                            "mcp",
+                        ]),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_scope_applies_only_to_claude() {
+        let claude =
+            install_plan(InstallClient::Claude, true, Path::new("/tmp/agent-recall")).unwrap();
+        assert_eq!(
+            rendered(&claude)[0].1[0],
+            args(&["mcp", "remove", "-s", "project", "agent-recall"])
+        );
+
+        let error =
+            install_plan(InstallClient::Codex, true, Path::new("/tmp/agent-recall")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only supported for Claude Code")
+        );
+    }
+
+    #[test]
+    fn missing_client_executable_is_distinguished_without_running_configuration() {
+        let plan =
+            install_plan(InstallClient::Codex, false, Path::new("/tmp/agent-recall")).unwrap();
+        let attempt = run_install_plan(&plan[0], |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not installed",
+            ))
+        })
+        .unwrap();
+        assert!(matches!(attempt, InstallAttempt::MissingExecutable));
+    }
 }

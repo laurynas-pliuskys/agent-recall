@@ -11,9 +11,9 @@ Active development branch: `main`
 
 ## Intended outcome
 
-Replace the current Python/SQLite implementation with a Rust/Tantivy fork of
-ticpu's repository, renamed to `agent-recall`. Preserve the existing repository
-as a read-only legacy archive and selectively port only the source-neutral
+Replace the previous Python implementation with a Rust/Tantivy fork of ticpu's
+repository, renamed to `agent-recall`. Preserve the existing repository as a
+read-only legacy archive and selectively port only the source-neutral
 architecture, safety decisions, and behavioral tests that still add value.
 
 Do not delete the existing repository. Rename and archive it so its Git history,
@@ -36,6 +36,9 @@ issues, and prior decisions remain available.
 - Treat the local MCP registrations and direct wire validation as verified
   readiness, not proof of a fresh-client installation flow. Fresh Claude Code
   and Codex session validation remains a Phase 8 requirement.
+- Use `agent-recall install --client all|claude|codex`, defaulting to `all`.
+  Codex registration is global; Claude Code registration uses user scope by
+  default or project scope with `--project`.
 - Target `2.1.0` for the first release containing the completed Codex
   integration and compatibility work. Phase 4's `2.0.0` rename remains the
   historical completed version bump.
@@ -249,10 +252,16 @@ requires its own decision and issue before implementation.
 Completed local readiness verification on 2026-07-31:
 
 - The Codex integration was merged as `37fd824`.
-- The current tree passed its checks: 35 unit tests and 2 integration tests.
+- The current tree passed its checks: 38 unit tests and 2 integration tests.
 - Direct MCP JSON-RPC wire validation passed.
 - The release binary was installed at `~/.local/bin/agent-recall`.
 - MCP registrations are present for both Claude Code and Codex.
+- The installer now supports `--client all|claude|codex` (default `all`), with
+  Codex global and Claude Code user/project scope handling. Its three focused
+  installer tests pass.
+- Basic installation documentation now covers installing from the checkout,
+  initial indexing, client selection, sequential verification, and manual
+  registration fallback for both clients.
 - A full Tantivy rebuild processed 71 transcript files and indexed 4,492 primary
   conversation entries.
 - A source-filtered Codex search succeeded against the rebuilt local index.
@@ -264,19 +273,12 @@ Remaining work, in priority order:
 2. Start fresh Claude Code and Codex sessions and prove that each client can
    call the MCP server, search both sources, retrieve source-correct context,
    and reindex after a new transcript is written.
-3. Extend the completed Claude Code and Codex registration/binary-path
-   documentation with migration-specific rebuild and upgrade guidance.
-4. State clearly that the old SQLite index is not reused and that Tantivy is
-   rebuilt from original transcript files.
-5. Decide whether old configuration values are imported or replaced with
-   documented equivalents.
-6. Detect the prior cache/config location and print a non-destructive migration
-   notice rather than deleting it.
+3. Document the current-tool upgrade procedure.
 
 ### Phase 9: Release and cutover
 
-1. Complete the remaining Phase 8 fresh-client end-to-end checks and migration
-   guidance.
+1. Complete the remaining Phase 8 fresh-client end-to-end checks and current
+   installation and upgrade guidance.
 2. Build a fresh `2.1.0` release artifact.
 3. Publish that artifact as a `2.1.0` prerelease.
 4. Verify fresh installation and upgrade from the prerelease artifact.
@@ -447,7 +449,6 @@ to trigger a search automatically, without explicitly naming an MCP tool.
 ## Things to discard by default
 
 - The Python indexing and search engine.
-- SQLite/FTS5 and its migrations.
 - The legacy Gemini adapter.
 - The duplicated legacy Claude parser.
 - The current AI summarization pipeline, at least initially.
@@ -465,16 +466,17 @@ to trigger a search automatically, without explicitly naming an MCP tool.
   URL.
 - [x] New repository is a real fork connected to ticpu upstream.
 - [x] Upstream baseline checks passed before branding, and the current tree's
-  35 unit tests and 2 integration tests pass after the Codex work.
+  38 unit tests and 2 integration tests pass after the Codex work.
 - [ ] Claude parity is preserved through a fresh client-session test.
 - [ ] Codex and Claude union search works end to end from fresh client sessions.
+- [x] The installer configures Claude Code and/or Codex with explicit client and
+  scope behavior, and basic installation documentation covers both clients.
 - [x] Source filters and source-qualified IDs work.
 - [x] A malformed source artifact is isolated so other artifacts continue to
   index.
 - [ ] Tool content is redacted before indexing.
 - [ ] Thinking indexing is opt-in.
 - [ ] MCP responses are structured and source-neutral.
-- [ ] Old SQLite data is left intact and the migration path is documented.
 - [ ] Fresh install and upgrade flows work from Claude Code and Codex.
 
 ## References
