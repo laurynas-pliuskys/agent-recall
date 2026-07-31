@@ -6,7 +6,7 @@ use tantivy::schema::{FAST, Field, INDEXED, STORED, Schema, SchemaBuilder, TEXT}
 use tantivy::{Index, IndexWriter, Term, doc};
 
 /// Current schema version - increment when schema changes to trigger rebuild
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub struct IndexFields {
     pub uuid_field: Field,
@@ -26,6 +26,7 @@ pub struct IndexFields {
     pub sequence_num_field: Field,
     pub is_sidechain_field: Field,
     pub agent_id_field: Field,
+    pub source_field: Field,
 }
 
 pub struct SearchIndexer {
@@ -63,6 +64,7 @@ impl SearchIndexer {
         let is_sidechain_field =
             schema_builder.add_bool_field("is_sidechain", INDEXED | STORED | FAST);
         let agent_id_field = schema_builder.add_text_field("agent_id", TEXT | STORED | FAST);
+        let source_field = schema_builder.add_text_field("source", TEXT | STORED | FAST);
 
         let schema = schema_builder.build();
         let fields = IndexFields {
@@ -83,6 +85,7 @@ impl SearchIndexer {
             sequence_num_field,
             is_sidechain_field,
             agent_id_field,
+            source_field,
         };
 
         (schema, fields)
@@ -93,7 +96,7 @@ impl SearchIndexer {
         let index = Index::open_in_dir(index_path)?;
         let actual_schema = index.schema();
 
-        // Check required fields exist - uuid is required in v2 schema
+        // Check required fields exist - uuid and source are required in v3 schema
         let required_fields = [
             "uuid",
             "content",
@@ -102,6 +105,7 @@ impl SearchIndexer {
             "timestamp",
             "message_type",
             "model",
+            "source",
         ];
 
         for field_name in required_fields {
@@ -150,6 +154,7 @@ impl SearchIndexer {
             sequence_num_field: schema.get_field("sequence_num")?,
             is_sidechain_field: schema.get_field("is_sidechain")?,
             agent_id_field: schema.get_field("agent_id")?,
+            source_field: schema.get_field("source")?,
         };
 
         let config = get_config();
@@ -196,6 +201,7 @@ impl SearchIndexer {
                 self.fields.sequence_num_field => entry.sequence_num as u64,
                 self.fields.is_sidechain_field => entry.is_sidechain,
                 self.fields.agent_id_field => entry.agent_id.unwrap_or_default(),
+                self.fields.source_field => entry.source.as_str(),
             );
 
             self.writer

@@ -78,8 +78,6 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
-        let parser = JsonlParser::default();
-
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
@@ -122,7 +120,22 @@ impl CacheManager {
                     .ok()?
                     .len();
                 let file_modified = file_mtime(&file_path).ok()?;
-                match parser.parse_file(&file_path) {
+                let entries_res = if file_path
+                    .to_string_lossy()
+                    .contains(".codex")
+                    || file_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .starts_with("rollout-")
+                {
+                    let codex_parser = super::codex_parser::CodexParser::default();
+                    codex_parser.parse_file(&file_path)
+                } else {
+                    let claude_parser = JsonlParser::default();
+                    claude_parser.parse_file(&file_path)
+                };
+                match entries_res {
                     Ok(entries) => Some(ParsedFile {
                         path: file_path,
                         file_size,

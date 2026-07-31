@@ -20,6 +20,9 @@ pub enum CliCommands {
     Search {
         /// Search query
         query: String,
+        /// Filter by source client (claude or codex)
+        #[arg(long)]
+        source: Option<String>,
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
@@ -199,6 +202,7 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
         CliCommands::Mcp => unreachable!("MCP handled in main"),
         CliCommands::Search {
             query,
+            source,
             project,
             session,
             limit,
@@ -218,8 +222,14 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             shared::auto_index(&index_path)?;
             let cb = ctx_before.unwrap_or(context);
             let ca = ctx_after.unwrap_or(context);
+            let source_filter = source
+                .as_deref()
+                .map(|s| s.parse::<shared::Source>())
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?;
             let opts = SearchOpts {
                 query,
+                source: source_filter,
                 project,
                 session,
                 limit,
@@ -388,6 +398,7 @@ fn clear_cache(index_path: &Path) -> Result<()> {
 
 struct SearchOpts {
     query: String,
+    source: Option<shared::Source>,
     project: Option<String>,
     session: Option<String>,
     limit: usize,
@@ -443,6 +454,7 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
 
     let query = SearchQuery {
         text: opts.query,
+        source_filter: opts.source,
         project_filter: opts.project,
         session_filter: opts.session,
         limit: opts.limit * 3,
@@ -527,6 +539,7 @@ fn show_topics(index_path: &Path, project_filter: Option<String>, limit: usize) 
     // Get all conversations to analyze topics
     let query = SearchQuery {
         text: "*".to_string(), // Match everything
+        source_filter: None,
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 100_000,
@@ -680,6 +693,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     // Get conversation stats
     let query = SearchQuery {
         text: "*".to_string(),
+        source_filter: None,
         project_filter: project_filter.clone(),
         session_filter: None,
         limit: 1_000_000,

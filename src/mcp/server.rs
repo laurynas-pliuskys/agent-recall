@@ -284,6 +284,12 @@ impl McpServer {
                             "type": "string",
                             "description": "Search query. Field syntax: 'session_id:abc', 'project:name'"
                         },
+                        "source": {
+                            "type": "string",
+                            "enum": ["claude", "codex"],
+                            "description": "Filter by conversation source client (claude or codex)",
+                            "optional": true
+                        },
                         "project": {
                             "type": "string",
                             "description": "Filter by project name",
@@ -684,8 +690,16 @@ impl McpServer {
             None
         };
 
+        let source_filter = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.parse::<crate::shared::Source>())
+            .transpose()
+            .map_err(|e| anyhow::anyhow!(e))?;
+
         let query = SearchQuery {
             text: query_text,
+            source_filter,
             project_filter,
             session_filter,
             limit: limit * 3,

@@ -202,6 +202,7 @@ impl JsonlParser {
         };
 
         Some(ConversationEntry {
+            source: super::source::Source::Claude,
             uuid,
             parent_uuid: raw.parent_uuid,
             session_id,

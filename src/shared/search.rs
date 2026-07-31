@@ -77,6 +77,7 @@ pub struct SearchEngine {
     sequence_num_field: Field,
     is_sidechain_field: Field,
     agent_id_field: Field,
+    source_field: Field,
     interaction_counts: HashMap<String, usize>,
 }
 
@@ -105,6 +106,7 @@ impl SearchEngine {
         let sequence_num_field = schema.get_field("sequence_num")?;
         let is_sidechain_field = schema.get_field("is_sidechain")?;
         let agent_id_field = schema.get_field("agent_id")?;
+        let source_field = schema.get_field("source")?;
 
         Ok(Self {
             index,
@@ -125,6 +127,7 @@ impl SearchEngine {
             sequence_num_field,
             is_sidechain_field,
             agent_id_field,
+            source_field,
             interaction_counts: session_counts,
         })
     }
@@ -170,6 +173,12 @@ impl SearchEngine {
             final_query_parts.push((Occur::Must, Box::new(session_query)));
         }
 
+        if let Some(ref source_filter) = query.source_filter {
+            let term = Term::from_field_text(self.source_field, source_filter.as_str());
+            let source_query = TermQuery::new(term, IndexRecordOption::Basic);
+            final_query_parts.push((Occur::Must, Box::new(source_query)));
+        }
+
         let final_query = if final_query_parts.len() > 1 {
             Box::new(BooleanQuery::new(final_query_parts)) as Box<dyn tantivy::query::Query>
         } else {
@@ -185,6 +194,13 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
+
+            // Apply source filter
+            if let Some(ref source_filter) = query.source_filter
+                && result.source != *source_filter
+            {
+                continue;
+            }
 
             // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
             if let Some(ref session_filter) = query.session_filter
@@ -553,9 +569,18 @@ impl SearchEngine {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        let source_str = doc
+            .get_first(self.source_field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+        let source = source_str
+            .parse()
+            .unwrap_or(super::source::Source::Claude);
+
         let interaction_count = self.get_interaction_count(&session_id);
 
         Ok(SearchResult {
+            source,
             uuid,
             parent_uuid,
             content,
@@ -929,6 +954,7 @@ mod tests {
         seq: usize,
     ) -> ConversationEntry {
         ConversationEntry {
+            source: crate::shared::Source::Claude,
             uuid: uuid.to_string(),
             parent_uuid: None,
             session_id: session_id.to_string(),
@@ -1039,6 +1065,7 @@ mod tests {
         cwd: &str,
     ) -> ConversationEntry {
         ConversationEntry {
+            source: crate::shared::Source::Claude,
             uuid: uuid.to_string(),
             parent_uuid: None,
             session_id: session_id.to_string(),

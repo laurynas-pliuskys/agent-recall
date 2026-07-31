@@ -66,12 +66,52 @@ pub fn find_session_jsonl(session_id: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-/// Discover all JSONL session files under `.claude/projects/`.
+/// Helper to find Codex session directories (~/.codex/sessions or Windows /mnt/c/Users/*/.codex/sessions)
+pub fn codex_sessions_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        let default_codex = home
+            .join(".codex")
+            .join("sessions");
+        if default_codex.exists() {
+            dirs.push(default_codex);
+        }
+    }
+    // WSL support for Windows host Codex sessions
+    if let Ok(entries) = std::fs::read_dir("/mnt/c/Users") {
+        for entry in entries.flatten() {
+            let win_codex = entry
+                .path()
+                .join(".codex")
+                .join("sessions");
+            if win_codex.exists() && !dirs.contains(&win_codex) {
+                dirs.push(win_codex);
+            }
+        }
+    }
+    dirs
+}
+
+/// Discover all JSONL session files under both `.claude/projects/` and `.codex/sessions/`.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
-    let pattern = projects_dir()?.join("**/*.jsonl");
-    let files: Vec<PathBuf> = glob(&pattern.to_string_lossy())?
-        .flatten()
-        .collect();
+    let mut files = Vec::new();
+
+    // 1. Claude session files
+    if let Ok(p_dir) = projects_dir() {
+        let pattern = p_dir.join("**/*.jsonl");
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            files.extend(entries.flatten());
+        }
+    }
+
+    // 2. Codex session files
+    for codex_dir in codex_sessions_dirs() {
+        let pattern = codex_dir.join("**/*.jsonl");
+        if let Ok(entries) = glob(&pattern.to_string_lossy()) {
+            files.extend(entries.flatten());
+        }
+    }
+
     Ok(files)
 }
 

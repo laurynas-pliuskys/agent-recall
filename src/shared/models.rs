@@ -1,3 +1,4 @@
+use super::source::Source;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +45,8 @@ pub enum ContentBlock {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConversationEntry {
+    #[serde(default)]
+    pub source: Source,
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub session_id: String,
@@ -112,6 +115,7 @@ pub enum SortOrder {
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     pub text: String,
+    pub source_filter: Option<Source>,
     pub project_filter: Option<String>,
     pub session_filter: Option<String>,
     pub limit: usize,
@@ -122,6 +126,7 @@ pub struct SearchQuery {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
+    pub source: Source,
     pub uuid: String,
     pub parent_uuid: Option<String>,
     pub content: String,
