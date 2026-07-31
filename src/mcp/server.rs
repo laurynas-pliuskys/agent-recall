@@ -269,7 +269,7 @@ impl McpServer {
         let tools = vec![
             Tool {
                 name: "search_conversations".to_string(),
-                description: "Search conversation history (Tantivy/BM25). Exact terms for functions (`_fix_ssh_agent`), natural language for concepts. Workflow: search → get_messages(ids)/truncate_length:0 for full text → summarize_session for AI summary.".to_string(),
+                description: "Search primary conversation history (Tantivy/BM25). Codex tool payloads are source-backed references; after selecting a Codex conversation, use search_session_references for technical evidence.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -361,6 +361,41 @@ impl McpServer {
                         }
                     },
                     "required": ["query"]
+                }),
+            },
+            Tool {
+                name: "search_session_references".to_string(),
+                description: "Search tool calls/results inside one selected Codex conversation. Reads the original rollout on demand; reference payloads are not stored in the primary Tantivy index.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": "Full Codex session ID from search_conversations"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Technical text to find in calls/results"
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": ["codex"],
+                            "optional": true,
+                            "default": "codex"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "optional": true,
+                            "default": 10
+                        },
+                        "truncate_length": {
+                            "type": "integer",
+                            "description": "Characters shown per reference. 0 = full content",
+                            "optional": true,
+                            "default": 300
+                        }
+                    },
+                    "required": ["session_id", "query"]
                 }),
             },
             Tool {
@@ -508,6 +543,10 @@ impl McpServer {
         {
             "search_conversations" => {
                 self.tool_search_conversations(request.arguments)
+                    .await?
+            }
+            "search_session_references" => {
+                self.tool_search_session_references(request.arguments)
                     .await?
             }
             "respawn_server" => {
@@ -828,6 +867,65 @@ impl McpServer {
             content: vec![ToolResult {
                 result_type: "text".to_string(),
                 text: output,
+            }],
+            is_error: None,
+        })?)
+    }
+
+    async fn tool_search_session_references(&mut self, args: Option<Value>) -> Result<Value> {
+        let args = args.unwrap_or_default();
+        let session_id = args
+            .get("session_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Missing 'query' parameter"))?;
+        let source = args
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            .parse::<crate::shared::Source>()
+            .map_err(|error| anyhow::anyhow!(error))?;
+        if source != crate::shared::Source::Codex {
+            anyhow::bail!(
+                "Source-backed reference search is currently enabled only for Codex; Claude tool evidence remains in the primary index"
+            );
+        }
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(10) as usize;
+        let truncate_length = args
+            .get("truncate_length")
+            .and_then(Value::as_u64)
+            .unwrap_or(300) as usize;
+
+        let artifact =
+            crate::shared::conversation_artifact(&self.search_engine, source, session_id)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Codex conversation '{}' was not found", session_id)
+                })?;
+        if !artifact.exists() {
+            anyhow::bail!("Source artifact is unavailable: {}", artifact.display());
+        }
+        self.ensure_artifact_fresh(&artifact)?;
+
+        let matches = crate::shared::search_conversation_references(
+            source, &artifact, session_id, query, limit,
+        )?;
+        let text = crate::shared::format_reference_matches(
+            source,
+            session_id,
+            query,
+            &matches,
+            truncate_length,
+        );
+        Ok(serde_json::to_value(CallToolResponse {
+            content: vec![ToolResult {
+                result_type: "text".to_string(),
+                text,
             }],
             is_error: None,
         })?)
@@ -1752,6 +1850,14 @@ mod tests {
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["id"], 1);
         assert_eq!(responses[1]["id"], 2);
+        let tools = responses[1]["result"]["tools"]
+            .as_array()
+            .unwrap();
+        assert!(
+            tools
+                .iter()
+                .any(|tool| { tool["name"] == "search_session_references" })
+        );
     }
 
     #[tokio::test]

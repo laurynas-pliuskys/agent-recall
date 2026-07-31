@@ -57,6 +57,8 @@ pub struct ConversationEntry {
     pub project_path: String,
     pub timestamp: DateTime<Utc>,
     pub message_type: MessageType,
+    #[serde(default)]
+    pub record_kind: RecordKind,
     pub content: String,
     pub model: Option<String>,
     pub cwd: Option<String>,
@@ -88,8 +90,19 @@ impl ConversationEntry {
     }
 
     pub fn is_tool_record(&self) -> bool {
-        looks_like_tool_record(&self.content)
+        matches!(
+            self.record_kind,
+            RecordKind::ToolCall | RecordKind::ToolResult
+        ) || looks_like_tool_record(&self.content)
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordKind {
+    #[default]
+    Conversation,
+    ToolCall,
+    ToolResult,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

@@ -172,13 +172,26 @@ impl CacheManager {
         // Phase 3 (serial): feed into IndexWriter and update cache metadata.
         let mut files_processed = 0;
         for parsed_file in parsed {
-            let entry_count = parsed_file
+            let source_adapter = super::source::conversation_source(parsed_file.source);
+            // Apply source-owned storage policy at the last boundary before
+            // Tantivy. Codex reference payloads must remain only in the source
+            // rollout; indexing and reference retrieval intentionally share the
+            // same parser so record identity and sequencing cannot drift.
+            let reference_count = parsed_file
                 .entries
-                .len();
+                .iter()
+                .filter(|entry| source_adapter.is_reference_record(entry))
+                .count();
+            let entries: Vec<_> = parsed_file
+                .entries
+                .into_iter()
+                .filter(|entry| source_adapter.is_primary_index_record(entry))
+                .collect();
+            let entry_count = entries.len();
             indexer.delete_artifact(parsed_file.source, &parsed_file.path)?;
 
             let mut conversation_counts = HashMap::new();
-            for entry in &parsed_file.entries {
+            for entry in &entries {
                 if matches!(
                     entry.message_type,
                     MessageType::User | MessageType::Assistant
@@ -194,8 +207,11 @@ impl CacheManager {
                 }
             }
 
-            indexer.index_conversations(parsed_file.entries)?;
-            info!("  Indexed {} entries", entry_count);
+            indexer.index_conversations(entries)?;
+            info!(
+                "  Indexed {} entries; kept {} references source-backed",
+                entry_count, reference_count
+            );
 
             self.metadata
                 .indexed_files

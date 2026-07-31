@@ -23,6 +23,7 @@ fn make_test_entry(
         project_path: project.to_string(),
         timestamp: Utc::now(),
         message_type: msg_type,
+        record_kind: agent_recall::shared::RecordKind::Conversation,
         content: content.to_string(),
         model: Some("gpt-5".to_string()),
         cwd: Some(project.to_string()),

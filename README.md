@@ -6,7 +6,7 @@ A single binary that works two ways:
 - **CLI**: Search your conversations from the terminal (`agent-recall search "rust async"`)
 - **MCP Server**: Lets Claude Code and Codex search conversation history during sessions
 
-Other tools are *viewers* - you browse manually. This tool indexes everything with Tantivy/BM25 and gives both you AND AI agents direct search access.
+Other tools are *viewers* - you browse manually. This tool builds a focused Tantivy/BM25 conversation index and gives both you AND AI agents direct search access, while retaining source-backed technical references for focused follow-up.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -29,12 +29,12 @@ This tool indexes **Claude Code and Codex conversations across all projects** an
 | Cross-project search | ✓ All projects indexed | ✗ Per-project only |
 | Full-text search | ✓ Tantivy/BM25 | Some have regex |
 | Jump to specific message | ✓ `center_on` + `-B/-A` context | ✗ |
-| Technical evidence | ✓ Searchable tool calls/results, compact by default | Varies |
+| Technical evidence | ✓ Codex references searched after conversation selection; Claude evidence remains capped in the primary index | Varies |
 | Passive staleness detection | ✓ Warns when index outdated | ✗ |
 
 ## Overview
 
-`agent-recall` indexes Claude Code and Codex transcript histories and exposes search via MCP so agents can find relevant past conversations during a later session. User-visible turns and textual tool calls/results are searchable; system/developer instructions, injected runtime context, mirrored events, and Codex reasoning records are excluded.
+`agent-recall` indexes Claude Code and Codex transcript histories and exposes search via MCP so agents can find relevant past conversations during a later session. For Codex, user-visible turns enter the primary index while tool calls/results remain only in the original rollout and are searched after selecting a conversation. Claude tool evidence retains the inherited capped-index behavior for now. System/developer instructions, injected runtime context, mirrored events, and Codex reasoning records are excluded.
 
 ## Features
 
@@ -57,7 +57,7 @@ This tool indexes **Claude Code and Codex conversations across all projects** an
 
 ### 🎯 **Smart Features**
 - **Auto-discovery** of Claude Code (`~/.claude/projects/`) and Codex (`$CODEX_HOME/sessions/` and `archived_sessions/`) transcripts
-- **Evidence-preserving tool indexing**: Keeps textual calls, commands, queries, and outputs searchable while hiding neighboring tool noise from compact results by default
+- **Two-tier Codex evidence retrieval**: Keeps the primary conversation index focused while preserving full textual tool references in the original rollout for conversation-scoped search
 - **Source-qualified identity**: Prevents same-looking Claude and Codex session/message IDs from colliding
 - **Passive health monitoring**: Warns when index is stale, offers reindex tool
 - **Robust parsing** handles malformed JSONL gracefully
@@ -90,6 +90,9 @@ agent-recall search "rust" --project "vault-rs"
 
 # Limit number of results
 agent-recall search "function" --limit 20
+
+# After selecting a Codex session, search its source-backed tool references
+agent-recall references <session-id> "SELECT access_method"
 ```
 
 ## CLI Reference
@@ -148,6 +151,7 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
 
 ### MCP Tools Available
 - **search_conversations**: Full-text search with `-C`/`-B`/`-A` context (grep-style).
+- **search_session_references**: Search source-backed tool calls/results within one selected Codex conversation.
 - **get_session_messages**: Paginated session content.
 - **get_messages**: Fetch full content of specific messages.
 - **summarize_session**: Returns Task instructions for session summarization.
@@ -159,9 +163,33 @@ This tool provides an MCP (Model Context Protocol) server for seamless integrati
 Use retrieval in stages so a long transcript does not consume the model's context:
 
 1. `search_conversations` returns one compact match per conversation with short surrounding-message previews.
-2. `get_session_messages(center_on=..., -B=..., -A=...)` expands only the relevant neighborhood. It defaults to 500 characters per message and omits neighboring tool records; pass `include=["tools"]` when the technical trace matters.
-3. `get_messages(ids=[...], source=..., session_id=...)` retrieves the exact source-qualified matched record, including a full textual tool call or output.
-4. Use paginated session reads only when the focused fragment is insufficient; `truncate_length=0` explicitly requests full message content.
+2. For Codex technical evidence, `search_session_references(session_id=..., query=...)` scans only that conversation's original rollout and returns bounded tool-reference previews.
+3. `get_session_messages(source="codex", session_id=..., center_on=..., -C=0, include=["tools"], truncate_length=0)` expands one exact Codex reference. For ordinary conversational context, omit `include=["tools"]`.
+4. `get_messages(ids=[...], source=..., session_id=...)` retrieves exact records that are present in the primary index. Codex tool references are intentionally absent from that index.
+5. Use paginated session reads only when the focused fragment is insufficient; `truncate_length=0` explicitly requests full message content.
+
+### Codex conversation index versus references
+
+Codex tool payloads are evidence, but they are not normally good global discovery text: large command output can distort ranking, duplicate sensitive data into the index, and increase its size. Agent Recall therefore keeps Codex discovery and technical inspection separate.
+
+```mermaid
+flowchart LR
+    R["Codex rollout JSONL<br/>conversation turns and tool records"]
+    I["Primary Tantivy index<br/>user and assistant turns only"]
+    C["Selected Codex conversation"]
+    S["Conversation-scoped reference search"]
+    E["Bounded reference previews<br/>with exact record IDs"]
+
+    R -->|"Index conversational turns and artifact locator"| I
+    I -->|"search_conversations"| C
+    C -->|"search_session_references"| S
+    S -->|"Read one rollout on demand"| R
+    S --> E
+```
+
+The original JSONL remains the full-fidelity technical record and the filesystem remains its security boundary. Reference search does not create a second technical index or persistent copy: it reparses one selected artifact and searches it in memory. This reduces index storage and prevents canonical tool payloads from influencing global BM25 ranking. Known synthetic approval transcripts that mirror tool arguments inside injected user-shaped messages are excluded as runtime context as well.
+
+The tradeoff is deliberate: an exact table name, command, or error that appears only in a Codex tool record cannot locate its conversation through global search. First find the conversation using its topic, decision, project, or user/assistant wording; then search its references. Claude still indexes capped tool inputs/results and will be migrated separately if this Codex design proves useful.
 
 ## Configuration
 
@@ -183,7 +211,7 @@ index:
   writer_heap_mb: 50
 ```
 
-Codex textual tool payloads are indexed in full so exact commands, SQL, and returned evidence remain searchable. Response truncation controls MCP token use; non-text media payloads are not indexed. Changing Claude tool limits requires a reindex (`agent-recall index rebuild`).
+Codex textual tool payloads are not stored in the primary index. They remain in the source rollout and are available through `search_session_references` followed by exact centered retrieval. Non-text media payloads are not exposed as textual references. Changing Claude tool limits requires a reindex (`agent-recall index rebuild`).
 
 ### Cache Location
 

@@ -60,6 +60,17 @@ pub trait ConversationSource: Sync {
     fn parser_version(&self) -> u32;
     fn discover(&self) -> Result<Vec<PathBuf>>;
     fn parse(&self, path: &Path, full_content: bool) -> Result<Vec<ConversationEntry>>;
+
+    /// Whether a parsed record belongs in the primary conversation-search index.
+    fn is_primary_index_record(&self, _entry: &ConversationEntry) -> bool {
+        true
+    }
+
+    /// Whether a parsed record is source-backed technical evidence. References
+    /// can be searched after selecting a conversation without entering Tantivy.
+    fn is_reference_record(&self, _entry: &ConversationEntry) -> bool {
+        false
+    }
 }
 
 struct ClaudeSource;
@@ -94,8 +105,9 @@ impl ConversationSource for CodexSource {
     }
 
     fn parser_version(&self) -> u32 {
-        // v2 adds canonical response_item tool calls and textual tool outputs.
-        2
+        // v3 keeps canonical tool records source-backed instead of indexing
+        // their payloads in the primary conversation-search index.
+        3
     }
 
     fn discover(&self) -> Result<Vec<PathBuf>> {
@@ -103,9 +115,20 @@ impl ConversationSource for CodexSource {
     }
 
     fn parse(&self, path: &Path, _full_content: bool) -> Result<Vec<ConversationEntry>> {
-        // Codex preserves complete textual records in both the search index and
-        // source-backed reads; retrieval controls bound returned context.
+        // Codex preserves complete textual records in the source artifact;
+        // adapter policy below decides which records enter the primary index.
         super::codex_parser::CodexParser::new().parse_file(path)
+    }
+
+    fn is_primary_index_record(&self, entry: &ConversationEntry) -> bool {
+        entry.record_kind == super::models::RecordKind::Conversation
+    }
+
+    fn is_reference_record(&self, entry: &ConversationEntry) -> bool {
+        matches!(
+            entry.record_kind,
+            super::models::RecordKind::ToolCall | super::models::RecordKind::ToolResult
+        )
     }
 }
 

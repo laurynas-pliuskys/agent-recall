@@ -1,5 +1,5 @@
 use super::metadata;
-use super::models::{ConversationEntry, MessageType};
+use super::models::{ConversationEntry, MessageType, RecordKind};
 use super::source::Source;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -10,9 +10,9 @@ use strip_ansi_escapes::strip_str;
 
 /// Parser for the rollout JSONL written by the currently installed Codex app.
 ///
-/// The source artifact remains the full-fidelity record. We also index the full
-/// textual tool payload so evidence is searchable; response-size controls live
-/// at retrieval time rather than silently discarding searchable data here.
+/// The source artifact remains the full-fidelity record. Parsing preserves
+/// textual tool payloads as explicitly typed references, while the Codex source
+/// adapter keeps those references out of the primary Tantivy index.
 pub struct CodexParser;
 
 impl Default for CodexParser {
@@ -28,6 +28,18 @@ impl CodexParser {
 
     pub fn with_full_content() -> Self {
         Self
+    }
+
+    fn is_mirrored_approval_context(text: &str) -> bool {
+        const MARKERS: &[&str] = &[
+            "The following is the Codex agent history whose request action you are assessing.",
+            "The following is the Codex agent history added since your last approval assessment.",
+            ">>> TRANSCRIPT START",
+            ">>> TRANSCRIPT DELTA START",
+        ];
+        MARKERS
+            .iter()
+            .any(|marker| text.contains(marker))
     }
 
     fn is_injected_context(text: &str) -> bool {
@@ -46,6 +58,7 @@ impl CodexParser {
         MARKERS
             .iter()
             .any(|marker| text.contains(marker))
+            || Self::is_mirrored_approval_context(text)
     }
 
     fn timestamp(
@@ -140,6 +153,7 @@ impl CodexParser {
         sequence_num: usize,
         uuid: String,
         message_type: MessageType,
+        record_kind: RecordKind,
         content: String,
         model: Option<String>,
         tools_used: Vec<String>,
@@ -162,6 +176,7 @@ impl CodexParser {
             project_path: project_path.to_string(),
             timestamp,
             message_type,
+            record_kind,
             content,
             model,
             cwd: (!project_path.is_empty()).then(|| project_path.to_string()),
@@ -283,6 +298,20 @@ impl CodexParser {
                         .get("content")
                         .and_then(Value::as_array)
                     {
+                        // Approval-assessment rollouts can split their injected
+                        // transcript marker and mirrored tool trace across
+                        // multiple text blocks. If any block identifies that
+                        // synthetic envelope, exclude the whole message.
+                        if items
+                            .iter()
+                            .any(|item| {
+                                item.get("text")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(Self::is_mirrored_approval_context)
+                            })
+                        {
+                            continue;
+                        }
                         for item in items {
                             if let Some(text) = item
                                 .get("text")
@@ -315,6 +344,7 @@ impl CodexParser {
                         sequence_counter,
                         Self::record_id(payload, &session_id, sequence_counter),
                         message_type,
+                        RecordKind::Conversation,
                         content,
                         payload
                             .get("model")
@@ -349,6 +379,7 @@ impl CodexParser {
                         sequence_counter,
                         Self::record_id(payload, &session_id, sequence_counter),
                         MessageType::Assistant,
+                        RecordKind::ToolCall,
                         content,
                         None,
                         vec![tool_name],
@@ -382,6 +413,7 @@ impl CodexParser {
                         sequence_counter,
                         Self::record_id(payload, &session_id, sequence_counter),
                         MessageType::Assistant,
+                        RecordKind::ToolResult,
                         format!("[tool_result:{tool_name}]\n{output}"),
                         None,
                         vec![tool_name],
@@ -444,6 +476,7 @@ mod tests {
                 .content
                 .contains("SELECT access_method")
         );
+        assert_eq!(entries[2].record_kind, RecordKind::ToolCall);
         assert!(
             entries[3]
                 .content
@@ -454,6 +487,7 @@ mod tests {
                 .content
                 .contains("service-account")
         );
+        assert_eq!(entries[3].record_kind, RecordKind::ToolResult);
         assert_eq!(entries[0].source_artifact, fixture_path);
     }
 

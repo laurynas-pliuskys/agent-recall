@@ -215,6 +215,7 @@ impl JsonlParser {
             project_path,
             timestamp,
             message_type,
+            record_kind: super::models::RecordKind::Conversation,
             content,
             model,
             cwd: raw.cwd,

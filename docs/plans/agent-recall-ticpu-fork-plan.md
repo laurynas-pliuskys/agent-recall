@@ -155,8 +155,8 @@ The shared engine now uses a source boundary resembling:
 ConversationSource
 |- discover()
 |- parse()
-|- source_name()
-`- resume_hint()
+|- is_primary_index_record()
+`- is_reference_record()
 ```
 
 The normalized record contains:
@@ -197,23 +197,30 @@ detected Codex home, including the Windows-host home when running in WSL. It
 uses the rollout metadata `id` as the native resumable thread ID and records the
 exact source artifact for later full-fidelity reads.
 
-The parser indexes user-visible user/assistant messages plus canonical textual
-tool calls and outputs. It excludes developer/system instructions, injected
-runtime/app/plugin context, encrypted reasoning, and mirrored event records.
-Non-text image/audio payloads are not indexed. Malformed non-final JSON records
-fail that artifact visibly; a partially written final line is tolerated for an
-active rollout.
+The parser recognizes user-visible user/assistant messages plus canonical
+textual tool calls and outputs. The Codex adapter puts only conversational turns
+in the primary Tantivy index; tool records remain in the original rollout and
+are searched on demand after a conversation is selected. It excludes
+developer/system instructions, injected runtime/app/plugin context, encrypted
+reasoning, and mirrored event records. Non-text image/audio payloads are not
+exposed as textual references. Malformed non-final JSON records fail that
+artifact visibly; a partially written final line is tolerated for an active
+rollout.
 
 Union search, source filters, overlapping-ID isolation, artifact-scoped
 replacement, source-correct context, parser invalidation, and source-specific
 resume hints have regression coverage. A release build was also validated with
 an isolated cache against the current local Codex session corpus on 2026-07-31;
-the active session and its textual tool calls/results were searchable.
+the active session and its textual tool calls/results were retrievable.
 
-Retrieval is fragment-first: search returns bounded previews, technical records
-do not consume the default conversational context window, a matched technical
-record is always shown, centered expansion defaults to 500 characters per
-message, and exact/full retrieval remains explicit.
+Retrieval is fragment-first and two-tiered for Codex: global search returns
+bounded conversational previews, `search_session_references` scans the selected
+rollout without creating a second persistent index, and centered expansion
+retrieves an exact technical record. This avoids tool-driven BM25 ranking and
+duplicate technical payload storage. The accepted tradeoff is that a term found
+only in a Codex tool record cannot be used for global conversation discovery.
+Claude's capped tool-input/result indexing remains unchanged and is deferred to
+a separate migration decision.
 
 ### Phase 7: Selectively port approved legacy concepts
 

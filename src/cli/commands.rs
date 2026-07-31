@@ -63,6 +63,22 @@ pub enum CliCommands {
         #[arg(long, default_value = "300")]
         truncate: usize,
     },
+    /// Search source-backed technical references within one conversation
+    References {
+        /// Session ID selected from primary conversation search
+        session_id: String,
+        /// Technical query to find in tool calls/results
+        query: String,
+        /// Source client (Codex references are supported now; Claude is deferred)
+        #[arg(long, default_value = "codex")]
+        source: String,
+        /// Results limit
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Characters shown per reference (0 = full content)
+        #[arg(long, default_value = "300")]
+        truncate: usize,
+    },
     /// Show technology topics and their usage across conversations
     Topics {
         /// Filter by project
@@ -256,6 +272,27 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
                 },
             };
             search_conversations(&index_path, opts)?;
+        }
+        CliCommands::References {
+            session_id,
+            query,
+            source,
+            limit,
+            truncate,
+        } => {
+            let config = shared::get_config();
+            let index_path = config.get_cache_dir()?;
+            shared::auto_index(&index_path)?;
+            search_references(
+                &index_path,
+                source
+                    .parse::<shared::Source>()
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                &session_id,
+                &query,
+                limit,
+                truncate,
+            )?;
         }
         CliCommands::Topics { project, limit } => {
             let config = shared::get_config();
@@ -536,6 +573,45 @@ fn search_conversations(index_path: &Path, opts: SearchOpts) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn search_references(
+    index_path: &Path,
+    source: shared::Source,
+    session_id: &str,
+    query: &str,
+    limit: usize,
+    truncate_length: usize,
+) -> Result<()> {
+    if source != shared::Source::Codex {
+        anyhow::bail!(
+            "Source-backed reference search is currently enabled only for Codex; Claude tool evidence remains in the primary index"
+        );
+    }
+    if !index_path.exists() {
+        anyhow::bail!("Index not found. Run 'agent-recall index rebuild' first");
+    }
+
+    let cache = CacheManager::new(index_path)?;
+    let search_engine = SearchEngine::new(
+        index_path,
+        cache
+            .get_session_counts()
+            .clone(),
+    )?;
+    let artifact = shared::conversation_artifact(&search_engine, source, session_id)?
+        .ok_or_else(|| anyhow::anyhow!("Codex conversation '{}' was not found", session_id))?;
+    if !artifact.exists() {
+        anyhow::bail!("Source artifact is unavailable: {}", artifact.display());
+    }
+
+    let matches =
+        shared::search_conversation_references(source, &artifact, session_id, query, limit)?;
+    println!(
+        "{}",
+        shared::format_reference_matches(source, session_id, query, &matches, truncate_length,)
+    );
     Ok(())
 }
 
