@@ -865,6 +865,123 @@ impl SearchEngine {
 
         Ok(results)
     }
+
+    /// Aggregate conversation statistics over every live document without
+    /// materializing stored message content or using a TopDocs result limit.
+    /// Turn counts remain sourced from cache metadata, whose keys include the
+    /// conversation source, so native IDs cannot collide across clients.
+    pub fn aggregate_conversation_stats(
+        &self,
+        project_filter: Option<&str>,
+    ) -> Result<ConversationStats> {
+        let searcher = self
+            .reader
+            .searcher();
+        let mut stats = ConversationStats::default();
+
+        for segment in searcher.segment_readers() {
+            let fast_fields = segment.fast_fields();
+            let project_paths = fast_fields
+                .str("project")?
+                .ok_or_else(|| anyhow::anyhow!("project is not configured as a fast field"))?;
+            let conversation_keys = fast_fields
+                .str("conversation_key")?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("conversation_key is not configured as a fast field")
+                })?;
+            let has_code = fast_fields.bool("has_code")?;
+            let has_error = fast_fields.bool("has_error")?;
+
+            let mut project_matches_cache = HashMap::new();
+            let mut project_path = String::new();
+            let mut conversation_key = String::new();
+
+            for doc_id in segment.doc_ids_alive() {
+                let Some(project_ord) = project_paths
+                    .ords()
+                    .first(doc_id)
+                else {
+                    continue;
+                };
+                let matches_project = *project_matches_cache
+                    .entry(project_ord)
+                    .or_insert_with(|| {
+                        project_path.clear();
+                        project_paths
+                            .ord_to_str(project_ord, &mut project_path)
+                            .unwrap_or(false)
+                            && project_filter
+                                .is_none_or(|filter| project_matches(&project_path, filter))
+                    });
+                if !matches_project {
+                    continue;
+                }
+
+                stats.total_messages += 1;
+                stats.code_messages += usize::from(
+                    has_code
+                        .first(doc_id)
+                        .unwrap_or(false),
+                );
+                stats.error_messages += usize::from(
+                    has_error
+                        .first(doc_id)
+                        .unwrap_or(false),
+                );
+
+                if let Some(conversation_ord) = conversation_keys
+                    .ords()
+                    .first(doc_id)
+                {
+                    conversation_key.clear();
+                    if conversation_keys
+                        .ord_to_str(conversation_ord, &mut conversation_key)
+                        .unwrap_or(false)
+                    {
+                        *stats
+                            .conversation_message_counts
+                            .entry(conversation_key.clone())
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        stats.total_turns = stats
+            .conversation_message_counts
+            .keys()
+            .map(|key| {
+                self.interaction_counts
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum();
+        Ok(stats)
+    }
+}
+
+/// Exact statistics for the conversations represented by an index scope.
+#[derive(Debug, Default)]
+pub struct ConversationStats {
+    pub total_messages: usize,
+    pub code_messages: usize,
+    pub error_messages: usize,
+    pub total_turns: usize,
+    pub conversation_message_counts: HashMap<String, usize>,
+}
+
+impl ConversationStats {
+    pub fn session_count(&self) -> usize {
+        self.conversation_message_counts
+            .len()
+    }
+
+    pub fn average_turns_per_session(&self) -> usize {
+        self.total_turns
+            .checked_div(self.session_count())
+            .unwrap_or(0)
+    }
 }
 
 /// Search result with surrounding context messages
@@ -1154,6 +1271,117 @@ mod tests {
             has_error: false,
             tools_mentioned: vec![],
         }
+    }
+
+    #[test]
+    fn aggregate_conversation_stats_is_exact_for_projects_and_source_collisions() {
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path();
+
+        let mut claude_first =
+            make_entry("claude-1", "shared-session", MessageType::User, "one", 0);
+        claude_first.project_path = "/work/alpha".to_string();
+
+        let mut claude_second = make_entry(
+            "claude-2",
+            "shared-session",
+            MessageType::Assistant,
+            "two",
+            1,
+        );
+        claude_second.project_path = "/work/alpha".to_string();
+        claude_second.has_code = true;
+
+        let mut codex_shared =
+            make_entry("codex-1", "shared-session", MessageType::User, "three", 0);
+        codex_shared.source = Source::Codex;
+        codex_shared.project_path = "/work/alpha".to_string();
+        codex_shared.has_error = true;
+
+        let mut codex_other = make_entry(
+            "codex-2",
+            "other-session",
+            MessageType::Assistant,
+            "four",
+            0,
+        );
+        codex_other.source = Source::Codex;
+        codex_other.project_path = "/work/beta".to_string();
+
+        let mut codex_without_project = make_entry(
+            "codex-3",
+            "no-project-session",
+            MessageType::User,
+            "five",
+            0,
+        );
+        codex_without_project.source = Source::Codex;
+        codex_without_project.project_path = String::new();
+
+        let mut indexer = SearchIndexer::new(index_path).unwrap();
+        indexer
+            .index_conversations(vec![
+                claude_first,
+                claude_second,
+                codex_shared,
+                codex_other,
+                codex_without_project,
+            ])
+            .unwrap();
+        indexer
+            .commit()
+            .unwrap();
+        drop(indexer);
+
+        let counts = HashMap::from([
+            (Source::Claude.conversation_key("shared-session"), 4),
+            (Source::Codex.conversation_key("shared-session"), 3),
+            (Source::Codex.conversation_key("other-session"), 2),
+            (Source::Codex.conversation_key("no-project-session"), 1),
+        ]);
+        let engine = SearchEngine::new(index_path, counts).unwrap();
+
+        let overall = engine
+            .aggregate_conversation_stats(None)
+            .unwrap();
+        assert_eq!(overall.total_messages, 5);
+        assert_eq!(overall.code_messages, 1);
+        assert_eq!(overall.error_messages, 1);
+        assert_eq!(overall.session_count(), 4);
+        assert_eq!(overall.total_turns, 10);
+        assert_eq!(overall.average_turns_per_session(), 2);
+        assert_eq!(
+            overall.conversation_message_counts[&Source::Claude.conversation_key("shared-session")],
+            2
+        );
+        assert_eq!(
+            overall.conversation_message_counts[&Source::Codex.conversation_key("shared-session")],
+            1
+        );
+
+        let alpha = engine
+            .aggregate_conversation_stats(Some("/work/alpha"))
+            .unwrap();
+        assert_eq!(alpha.total_messages, 3);
+        assert_eq!(alpha.code_messages, 1);
+        assert_eq!(alpha.error_messages, 1);
+        assert_eq!(alpha.session_count(), 2);
+        assert_eq!(alpha.total_turns, 7);
+        assert_eq!(alpha.average_turns_per_session(), 3);
+
+        let alpha_by_name = engine
+            .aggregate_conversation_stats(Some("alpha"))
+            .unwrap();
+        assert_eq!(alpha_by_name.total_messages, 3);
+        assert_eq!(alpha_by_name.total_turns, 7);
+
+        let missing = engine
+            .aggregate_conversation_stats(Some("/work/missing"))
+            .unwrap();
+        assert_eq!(missing.total_messages, 0);
+        assert_eq!(missing.session_count(), 0);
+        assert_eq!(missing.total_turns, 0);
+        assert_eq!(missing.average_turns_per_session(), 0);
     }
 
     #[test]

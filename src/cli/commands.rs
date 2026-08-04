@@ -990,43 +990,8 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
             .clone(),
     )?;
 
-    // Get conversation stats
-    let query = SearchQuery {
-        text: "*".to_string(),
-        source_filter: None,
-        project_filter: project_filter.clone(),
-        session_filter: None,
-        limit: 1_000_000,
-        sort_by: SortOrder::default(),
-        after: None,
-        before: None,
-    };
-
-    let results = search_engine.search(query)?;
-
-    let mut code_conversations = 0;
-    let mut error_conversations = 0;
-    let mut total_interactions = 0;
-    let mut session_counts = HashMap::new();
-
-    for result in &results {
-        if result.has_code {
-            code_conversations += 1;
-        }
-        if result.has_error {
-            error_conversations += 1;
-        }
-        total_interactions += result.interaction_count;
-
-        session_counts
-            .entry(
-                result
-                    .session_id
-                    .clone(),
-            )
-            .and_modify(|count| *count += 1)
-            .or_insert(1);
-    }
+    let conversation_stats =
+        search_engine.aggregate_conversation_stats(project_filter.as_deref())?;
 
     if let Some(ref project) = project_filter {
         println!("📊 Statistics for project: {project}\n");
@@ -1047,51 +1012,60 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     println!();
 
-    let total_indexed = cache_stats.total_entries as usize;
-    let sampled = results.len();
-
     println!("Conversation Analysis:");
-    println!("  💬 Total messages indexed: {}", total_indexed);
-    println!("  🏗️ Unique sessions: {}", session_counts.len());
-    if sampled < total_indexed {
-        println!(
-            "  📊 Sampled for stats: {} ({:.1}%)",
-            sampled,
-            (sampled as f64 / total_indexed as f64) * 100.0
-        );
-    }
+    println!(
+        "  💬 Total messages indexed: {}",
+        conversation_stats.total_messages
+    );
+    println!(
+        "  🏗️ Unique sessions: {}",
+        conversation_stats.session_count()
+    );
     println!(
         "  📝 Messages with code: {} ({:.1}%)",
-        code_conversations,
-        (code_conversations as f64 / sampled as f64) * 100.0
+        conversation_stats.code_messages,
+        percentage(
+            conversation_stats.code_messages,
+            conversation_stats.total_messages
+        )
     );
     println!(
         "  🚨 Messages with errors: {} ({:.1}%)",
-        error_conversations,
-        (error_conversations as f64 / sampled as f64) * 100.0
+        conversation_stats.error_messages,
+        percentage(
+            conversation_stats.error_messages,
+            conversation_stats.total_messages
+        )
     );
     println!(
-        "  💬 Total interactions: {} (avg: {} per conversation)",
-        total_interactions,
-        if !results.is_empty() {
-            total_interactions / results.len()
-        } else {
-            0
-        }
+        "  💬 Total turns: {} (avg: {} per conversation)",
+        conversation_stats.total_turns,
+        conversation_stats.average_turns_per_session()
     );
 
     // Show most active sessions
-    if !session_counts.is_empty() {
+    if !conversation_stats
+        .conversation_message_counts
+        .is_empty()
+    {
         println!();
         println!("Most Active Sessions:");
-        let mut sorted_sessions: Vec<_> = session_counts
+        let mut sorted_sessions: Vec<_> = conversation_stats
+            .conversation_message_counts
             .iter()
+            .filter_map(|(key, count)| {
+                let (source, session_id) = key.split_once('\0')?;
+                let source = source
+                    .parse::<shared::Source>()
+                    .ok()?;
+                Some(((source, session_id), *count))
+            })
             .collect();
         sorted_sessions.sort_by(|a, b| {
-            b.1.cmp(a.1)
+            b.1.cmp(&a.1)
         });
 
-        for (session_id, count) in sorted_sessions
+        for ((source, session_id), count) in sorted_sessions
             .iter()
             .take(5)
         {
@@ -1100,11 +1074,19 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
             } else {
                 session_id.to_string()
             };
-            println!("  {short_id} ({count} messages)");
+            println!("  {source}:{short_id} ({count} messages)");
         }
     }
 
     Ok(())
+}
+
+fn percentage(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64 * 100.0
+    }
 }
 
 fn view_session(
@@ -1653,5 +1635,16 @@ mod install_tests {
         })
         .unwrap();
         assert!(matches!(attempt, InstallAttempt::MissingExecutable));
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn percentage_returns_zero_for_an_empty_scope() {
+        assert_eq!(percentage(0, 0), 0.0);
+        assert_eq!(percentage(1, 4), 25.0);
     }
 }
