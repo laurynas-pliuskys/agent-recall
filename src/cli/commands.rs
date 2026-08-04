@@ -1006,8 +1006,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     let mut code_conversations = 0;
     let mut error_conversations = 0;
-    let mut total_interactions = 0;
-    let mut session_counts = HashMap::new();
+    let mut turn_stats = TurnStats::default();
 
     for result in &results {
         if result.has_code {
@@ -1016,16 +1015,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
         if result.has_error {
             error_conversations += 1;
         }
-        total_interactions += result.interaction_count;
-
-        session_counts
-            .entry(
-                result
-                    .session_id
-                    .clone(),
-            )
-            .and_modify(|count| *count += 1)
-            .or_insert(1);
+        turn_stats.record_message(result.source, &result.session_id, result.interaction_count);
     }
 
     if let Some(ref project) = project_filter {
@@ -1052,7 +1042,7 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     println!("Conversation Analysis:");
     println!("  💬 Total messages indexed: {}", total_indexed);
-    println!("  🏗️ Unique sessions: {}", session_counts.len());
+    println!("  🏗️ Unique sessions: {}", turn_stats.session_count());
     if sampled < total_indexed {
         println!(
             "  📊 Sampled for stats: {} ({:.1}%)",
@@ -1071,27 +1061,27 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
         (error_conversations as f64 / sampled as f64) * 100.0
     );
     println!(
-        "  💬 Total interactions: {} (avg: {} per conversation)",
-        total_interactions,
-        if !results.is_empty() {
-            total_interactions / results.len()
-        } else {
-            0
-        }
+        "  💬 Total turns: {} (avg: {} per conversation)",
+        turn_stats.total_turns,
+        turn_stats.average_turns_per_session()
     );
 
     // Show most active sessions
-    if !session_counts.is_empty() {
+    if !turn_stats
+        .message_counts
+        .is_empty()
+    {
         println!();
         println!("Most Active Sessions:");
-        let mut sorted_sessions: Vec<_> = session_counts
+        let mut sorted_sessions: Vec<_> = turn_stats
+            .message_counts
             .iter()
             .collect();
         sorted_sessions.sort_by(|a, b| {
             b.1.cmp(a.1)
         });
 
-        for (session_id, count) in sorted_sessions
+        for ((source, session_id), count) in sorted_sessions
             .iter()
             .take(5)
         {
@@ -1100,11 +1090,46 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
             } else {
                 session_id.to_string()
             };
-            println!("  {short_id} ({count} messages)");
+            println!("  {source}:{short_id} ({count} messages)");
         }
     }
 
     Ok(())
+}
+
+/// Summary statistics derived from indexed messages. A turn count belongs to
+/// the whole source-qualified conversation, so it is included exactly once.
+#[derive(Default)]
+struct TurnStats {
+    total_turns: usize,
+    message_counts: HashMap<(shared::Source, String), usize>,
+}
+
+impl TurnStats {
+    fn record_message(&mut self, source: shared::Source, session_id: &str, turn_count: usize) {
+        let key = (source, session_id.to_string());
+        if !self
+            .message_counts
+            .contains_key(&key)
+        {
+            self.total_turns += turn_count;
+        }
+        *self
+            .message_counts
+            .entry(key)
+            .or_insert(0) += 1;
+    }
+
+    fn session_count(&self) -> usize {
+        self.message_counts
+            .len()
+    }
+
+    fn average_turns_per_session(&self) -> usize {
+        self.total_turns
+            .checked_div(self.session_count())
+            .unwrap_or(0)
+    }
 }
 
 fn view_session(
@@ -1653,5 +1678,33 @@ mod install_tests {
         })
         .unwrap();
         assert!(matches!(attempt, InstallAttempt::MissingExecutable));
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn turn_stats_counts_each_source_qualified_session_once() {
+        let mut stats = TurnStats::default();
+
+        stats.record_message(shared::Source::Claude, "shared-session", 4);
+        stats.record_message(shared::Source::Claude, "shared-session", 4);
+        stats.record_message(shared::Source::Codex, "shared-session", 3);
+        stats.record_message(shared::Source::Codex, "shared-session", 3);
+        stats.record_message(shared::Source::Codex, "second-session", 2);
+
+        assert_eq!(stats.total_turns, 9);
+        assert_eq!(stats.session_count(), 3);
+        assert_eq!(stats.average_turns_per_session(), 3);
+        assert_eq!(
+            stats.message_counts[&(shared::Source::Claude, "shared-session".to_string())],
+            2
+        );
+        assert_eq!(
+            stats.message_counts[&(shared::Source::Codex, "shared-session".to_string())],
+            2
+        );
     }
 }
