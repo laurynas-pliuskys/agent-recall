@@ -990,33 +990,8 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
             .clone(),
     )?;
 
-    // Get conversation stats
-    let query = SearchQuery {
-        text: "*".to_string(),
-        source_filter: None,
-        project_filter: project_filter.clone(),
-        session_filter: None,
-        limit: 1_000_000,
-        sort_by: SortOrder::default(),
-        after: None,
-        before: None,
-    };
-
-    let results = search_engine.search(query)?;
-
-    let mut code_conversations = 0;
-    let mut error_conversations = 0;
-    let mut turn_stats = TurnStats::default();
-
-    for result in &results {
-        if result.has_code {
-            code_conversations += 1;
-        }
-        if result.has_error {
-            error_conversations += 1;
-        }
-        turn_stats.record_message(result.source, &result.session_id, result.interaction_count);
-    }
+    let conversation_stats =
+        search_engine.aggregate_conversation_stats(project_filter.as_deref())?;
 
     if let Some(ref project) = project_filter {
         println!("📊 Statistics for project: {project}\n");
@@ -1037,48 +1012,57 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
 
     println!();
 
-    let total_indexed = cache_stats.total_entries as usize;
-    let sampled = results.len();
-
     println!("Conversation Analysis:");
-    println!("  💬 Total messages indexed: {}", total_indexed);
-    println!("  🏗️ Unique sessions: {}", turn_stats.session_count());
-    if sampled < total_indexed {
-        println!(
-            "  📊 Sampled for stats: {} ({:.1}%)",
-            sampled,
-            (sampled as f64 / total_indexed as f64) * 100.0
-        );
-    }
+    println!(
+        "  💬 Total messages indexed: {}",
+        conversation_stats.total_messages
+    );
+    println!(
+        "  🏗️ Unique sessions: {}",
+        conversation_stats.session_count()
+    );
     println!(
         "  📝 Messages with code: {} ({:.1}%)",
-        code_conversations,
-        (code_conversations as f64 / sampled as f64) * 100.0
+        conversation_stats.code_messages,
+        percentage(
+            conversation_stats.code_messages,
+            conversation_stats.total_messages
+        )
     );
     println!(
         "  🚨 Messages with errors: {} ({:.1}%)",
-        error_conversations,
-        (error_conversations as f64 / sampled as f64) * 100.0
+        conversation_stats.error_messages,
+        percentage(
+            conversation_stats.error_messages,
+            conversation_stats.total_messages
+        )
     );
     println!(
         "  💬 Total turns: {} (avg: {} per conversation)",
-        turn_stats.total_turns,
-        turn_stats.average_turns_per_session()
+        conversation_stats.total_turns,
+        conversation_stats.average_turns_per_session()
     );
 
     // Show most active sessions
-    if !turn_stats
-        .message_counts
+    if !conversation_stats
+        .conversation_message_counts
         .is_empty()
     {
         println!();
         println!("Most Active Sessions:");
-        let mut sorted_sessions: Vec<_> = turn_stats
-            .message_counts
+        let mut sorted_sessions: Vec<_> = conversation_stats
+            .conversation_message_counts
             .iter()
+            .filter_map(|(key, count)| {
+                let (source, session_id) = key.split_once('\0')?;
+                let source = source
+                    .parse::<shared::Source>()
+                    .ok()?;
+                Some(((source, session_id), *count))
+            })
             .collect();
         sorted_sessions.sort_by(|a, b| {
-            b.1.cmp(a.1)
+            b.1.cmp(&a.1)
         });
 
         for ((source, session_id), count) in sorted_sessions
@@ -1097,38 +1081,11 @@ fn show_stats(index_path: &Path, project_filter: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Summary statistics derived from indexed messages. A turn count belongs to
-/// the whole source-qualified conversation, so it is included exactly once.
-#[derive(Default)]
-struct TurnStats {
-    total_turns: usize,
-    message_counts: HashMap<(shared::Source, String), usize>,
-}
-
-impl TurnStats {
-    fn record_message(&mut self, source: shared::Source, session_id: &str, turn_count: usize) {
-        let key = (source, session_id.to_string());
-        if !self
-            .message_counts
-            .contains_key(&key)
-        {
-            self.total_turns += turn_count;
-        }
-        *self
-            .message_counts
-            .entry(key)
-            .or_insert(0) += 1;
-    }
-
-    fn session_count(&self) -> usize {
-        self.message_counts
-            .len()
-    }
-
-    fn average_turns_per_session(&self) -> usize {
-        self.total_turns
-            .checked_div(self.session_count())
-            .unwrap_or(0)
+fn percentage(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64 * 100.0
     }
 }
 
@@ -1686,25 +1643,8 @@ mod stats_tests {
     use super::*;
 
     #[test]
-    fn turn_stats_counts_each_source_qualified_session_once() {
-        let mut stats = TurnStats::default();
-
-        stats.record_message(shared::Source::Claude, "shared-session", 4);
-        stats.record_message(shared::Source::Claude, "shared-session", 4);
-        stats.record_message(shared::Source::Codex, "shared-session", 3);
-        stats.record_message(shared::Source::Codex, "shared-session", 3);
-        stats.record_message(shared::Source::Codex, "second-session", 2);
-
-        assert_eq!(stats.total_turns, 9);
-        assert_eq!(stats.session_count(), 3);
-        assert_eq!(stats.average_turns_per_session(), 3);
-        assert_eq!(
-            stats.message_counts[&(shared::Source::Claude, "shared-session".to_string())],
-            2
-        );
-        assert_eq!(
-            stats.message_counts[&(shared::Source::Codex, "shared-session".to_string())],
-            2
-        );
+    fn percentage_returns_zero_for_an_empty_scope() {
+        assert_eq!(percentage(0, 0), 0.0);
+        assert_eq!(percentage(1, 4), 25.0);
     }
 }
