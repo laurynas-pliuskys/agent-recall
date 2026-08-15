@@ -72,7 +72,8 @@ pub fn rebuild(index_path: &Path, allow_history_loss: bool) -> Result<()> {
     let _lock = ExclusiveIndexAccess::acquire()?;
 
     let mut cache_manager = CacheManager::new(index_path)?;
-    let missing = cache_manager.missing_native_artifact_count();
+    let all_files = discover_jsonl_files()?;
+    let missing = cache_manager.at_risk_native_artifact_count(&all_files);
     if missing > 0 && !allow_history_loss {
         anyhow::bail!(
             "Refusing rebuild: {missing} indexed native source artifact(s) are missing and their retained history would be permanently lost. Re-run with `--allow-history-loss` to acknowledge this."
@@ -81,8 +82,6 @@ pub fn rebuild(index_path: &Path, allow_history_loss: bool) -> Result<()> {
     cache_manager.clear_cache()?;
 
     let mut indexer = SearchIndexer::new(index_path)?;
-    let all_files = discover_jsonl_files()?;
-
     info!("Found {} files to process", all_files.len());
     cache_manager.update_incremental(&mut indexer, all_files)?;
 

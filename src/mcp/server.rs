@@ -1516,7 +1516,7 @@ Task(
 
         let result = if full_rebuild {
             let existing_cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            let missing = existing_cache.missing_native_artifact_count();
+            let missing = existing_cache.at_risk_native_artifact_count(&all_files);
             if missing > 0 && !allow_history_loss {
                 anyhow::bail!(
                     "Refusing full rebuild: {missing} indexed native source artifact(s) are missing and their retained history would be permanently lost. Retry with allow_history_loss=true to acknowledge this."

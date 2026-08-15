@@ -58,7 +58,12 @@ impl CacheManager {
 
         let metadata = if metadata_file.exists() {
             let content = fs::read_to_string(&metadata_file)?;
-            serde_json::from_str(&content).unwrap_or_default()
+            serde_json::from_str(&content).map_err(|error| {
+                anyhow::anyhow!(
+                    "Could not parse cache metadata {}: {error}. Refusing to discard retention information; repair it or explicitly remove the cache.",
+                    metadata_file.display()
+                )
+            })?
         } else {
             CacheMetadata::default()
         };
@@ -314,6 +319,9 @@ impl CacheManager {
                             metadata
                                 .conversation_entry_counts
                                 .contains_key(conversation)
+                                || metadata
+                                    .conversation_counts
+                                    .contains_key(conversation)
                         })
             })
             .map(|(path, _)| path.clone())
@@ -334,6 +342,22 @@ impl CacheManager {
                 .indexed_files
                 .get_mut(&path)
             {
+                let legacy_counts_only = metadata
+                    .conversation_entry_counts
+                    .is_empty()
+                    && incoming
+                        .keys()
+                        .any(|conversation| {
+                            metadata
+                                .conversation_counts
+                                .contains_key(conversation)
+                        });
+                if legacy_counts_only {
+                    // Older metadata cannot tell how many non-display records
+                    // belong to each session. Removing this superseded artifact
+                    // avoids double-counted turns/entries after a move.
+                    remove_artifact = true;
+                }
                 for conversation in incoming.keys() {
                     if let Some(count) = metadata
                         .conversation_entry_counts
@@ -347,7 +371,7 @@ impl CacheManager {
                             .remove(conversation);
                     }
                 }
-                remove_artifact = metadata.entry_count == 0;
+                remove_artifact |= metadata.entry_count == 0;
             }
             if remove_artifact {
                 self.metadata
@@ -420,6 +444,19 @@ impl CacheManager {
             .indexed_files
             .iter()
             .filter(|(path, metadata)| metadata.source != Source::ClaudeWeb && !path.exists())
+            .count()
+    }
+
+    /// Native artifacts that a rebuild cannot restore from the current
+    /// discovery scope, whether absent on disk or simply no longer discoverable.
+    pub fn at_risk_native_artifact_count(&self, discovered: &[PathBuf]) -> usize {
+        self.metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, metadata)| {
+                metadata.source != Source::ClaudeWeb
+                    && (!path.exists() || !discovered.contains(path))
+            })
             .count()
     }
 
@@ -744,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_claude_and_codex_artifacts_remain_searchable() {
+    fn undiscovered_claude_and_codex_artifacts_are_at_risk_of_rebuild() {
         let temporary = TempDir::new().unwrap();
         let cache_dir = temporary
             .path()
@@ -757,6 +794,7 @@ mod tests {
             let artifact = temporary
                 .path()
                 .join(format!("{source}-missing.jsonl"));
+            std::fs::write(&artifact, "retained source outside discovery scope").unwrap();
             indexer
                 .index_conversations(vec![ConversationEntry {
                     source,
@@ -813,7 +851,8 @@ mod tests {
             .save_metadata()
             .unwrap();
 
-        assert_eq!(cache.missing_native_artifact_count(), 2);
+        assert_eq!(cache.missing_native_artifact_count(), 0);
+        assert_eq!(cache.at_risk_native_artifact_count(&[]), 2);
 
         let engine = SearchEngine::new(
             &cache_dir,
@@ -881,6 +920,90 @@ mod tests {
                 .get(&Source::ClaudeWeb.conversation_key("conversation-a")),
             Some(&2)
         );
+    }
+
+    #[test]
+    fn legacy_metadata_is_removed_when_a_moved_artifact_supersedes_it() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let original = temporary
+            .path()
+            .join("conversation-legacy.claude-web.json");
+        let moved = temporary
+            .path()
+            .join("conversation-legacy-moved.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &original,
+        )
+        .unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![original.clone()])
+            .unwrap();
+        cache
+            .metadata
+            .indexed_files
+            .get_mut(&original)
+            .unwrap()
+            .conversation_entry_counts
+            .clear();
+        std::fs::rename(&original, &moved).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![moved])
+            .unwrap();
+
+        assert!(
+            !cache
+                .metadata
+                .indexed_files
+                .contains_key(&original)
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            3
+        );
+        assert_eq!(
+            cache
+                .get_session_counts()
+                .get(&Source::ClaudeWeb.conversation_key("conversation-a")),
+            Some(&2)
+        );
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn malformed_metadata_is_an_actionable_error() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache-metadata.json"), "not json").unwrap();
+        let error = CacheManager::new(&cache_dir)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("Refusing to discard retention information"));
     }
 
     #[test]

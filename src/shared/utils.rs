@@ -55,27 +55,34 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
     {
         return Ok(());
     }
-    index_now(index_path)
+    index_now_with_forced_files(index_path, None, true)
 }
 
 /// Run an explicit incremental indexing operation. Unlike [`auto_index`], an
 /// explicit caller never honors the startup convenience switch.
 pub fn index_now(index_path: &Path) -> Result<()> {
-    index_now_with_forced_files(index_path, None)
+    index_now_with_forced_files(index_path, None, false)
 }
 
 /// Explicitly index selected artifacts even if their mtime and size appear
 /// unchanged. Used after replacing managed import files.
 pub fn index_now_forced(index_path: &Path, files: Vec<PathBuf>) -> Result<()> {
-    index_now_with_forced_files(index_path, Some(files))
+    index_now_with_forced_files(index_path, Some(files), false)
 }
 
 fn index_now_with_forced_files(
     index_path: &Path,
     forced_files: Option<Vec<PathBuf>>,
+    skip_on_busy: bool,
 ) -> Result<()> {
-    // Try to acquire exclusive lock for indexing
-    let _lock = ExclusiveIndexAccess::acquire()?;
+    let _lock = match ExclusiveIndexAccess::acquire() {
+        Ok(lock) => lock,
+        Err(error) if skip_on_busy => {
+            info!("Skipping auto-index: another process is currently indexing ({error})");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
 
     let mut indexer = if index_path
         .join("meta.json")
@@ -100,11 +107,10 @@ fn index_now_with_forced_files(
     };
 
     let mut cache_manager = CacheManager::new(index_path)?;
+    let all_files = discover_jsonl_files()?;
+    cache_manager.update_incremental(&mut indexer, all_files)?;
     if let Some(files) = forced_files {
         cache_manager.update_incremental_forced(&mut indexer, files)?;
-    } else {
-        let all_files = discover_jsonl_files()?;
-        cache_manager.update_incremental(&mut indexer, all_files)?;
     }
     Ok(())
 }
