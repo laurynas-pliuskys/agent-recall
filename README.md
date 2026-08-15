@@ -17,9 +17,12 @@ If you work across **dozens of projects**, you know the pain:
 - "What was that regex pattern I used for parsing logs?"
 - "How did I configure that Docker setup?"
 
-This tool indexes **Claude Code and Codex conversations across all projects**, plus an explicitly configured Claude web export, and lets your agent search them instantly. No more digging through folders or re-explaining context.
+This tool indexes **Claude Code and Codex conversations across all projects**, plus explicitly imported Claude web exports, and lets your agent search them instantly. No more digging through folders or re-explaining context.
 
-> **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
+Once a conversation has entered the index, automatic incremental scans retain
+its searchable primary records even if Claude Code or Codex later removes the
+original transcript. Source-backed Codex tool-reference retrieval still needs
+the original rollout unless that rollout remains available.
 
 ## Why This Tool?
 
@@ -80,19 +83,26 @@ agent-recall index rebuild
 To register just one client, use `agent-recall install --client claude` or
 `agent-recall install --client codex`.
 
-### Optional Claude web export
+### Import a Claude web export
 
-To index a downloaded Claude web/desktop export, explicitly configure its
-`conversations.json` path. Agent Recall does not scan Downloads automatically.
+Claude web/desktop exports are a one-off import, not a configured live source.
+Import the downloaded `conversations.json` explicitly; Agent Recall never
+scans Downloads automatically.
 
-```yaml
-# ~/.config/agent-recall/config.yaml
-index:
-  claude_export_path: /absolute/path/to/Claude-backup/conversations.json
+```bash
+agent-recall import claude-web /absolute/path/to/Claude-backup/conversations.json
 ```
 
-Then run `agent-recall index rebuild`. Search it with
+The command copies each conversation's raw export object to managed local data
+storage and indexes it. The original download may then disappear. Re-importing
+upserts matching native conversation IDs and retains IDs absent from the newer
+export, so an import never silently deletes history. Search it with
 `agent-recall search "query" --source claude-web`.
+
+Claude web normalization includes human-visible `text`/`content` blocks plus
+file and attachment names with MIME labels. It deliberately does not stringify
+opaque attachment or internal JSON payloads. Native conversation/message IDs,
+timestamps, and message order are retained in the managed raw source.
 
 ### Codex-only workstation
 
@@ -146,10 +156,18 @@ agent-recall index rebuild      # Force full rebuild (recreates index)
 ```
 
 **What `index rebuild` does:**
-- Scans Claude Code and Codex transcript directories for `*.jsonl` files
+- Scans Claude Code and Codex transcript directories plus managed Claude web imports
 - Parses conversation entries with timestamps, content, and metadata
 - Builds full-text search index using Tantivy
 - Index stored at `~/.cache/agent-recall/`
+
+`index rebuild` and MCP `reindex(full=true)` deliberately discard the
+searchable index before rebuilding it; `cache clear` discards it until the next
+index operation. A rebuild restores managed Claude web imports because their
+raw files are stored separately; it cannot restore deleted Claude Code/Codex
+transcripts that are no longer on disk. Ordinary auto-indexing never removes
+previously indexed conversations merely because an original transcript
+disappeared.
 
 ### `agent-recall search <query>`
 Search through your indexed conversations.

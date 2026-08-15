@@ -11,7 +11,7 @@
     "uuid": "conversation-b",
     "name": null,
     "chat_messages": [
-      {"uuid": "message-b1", "text": "A separate topic.", "sender": "human", "created_at": "2026-01-03T03:04:05Z", "parent_message_uuid": null}
+      {"uuid": "message-b1", "text": "", "content": [{"type": "text", "text": "A separate topic from structured content."}], "files": [{"file_name": "design.md", "mime_type": "text/markdown"}], "attachments": [{"title": "wireframe.png", "mimeType": "image/png"}], "sender": "human", "created_at": "2026-01-03T03:04:05Z", "parent_message_uuid": null}
     ]
   }
 ]

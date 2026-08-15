@@ -974,11 +974,12 @@ impl McpServer {
             self.ensure_artifact_fresh(&artifact_path)?;
 
             // Read the source artifact directly for full-fidelity content.
-            let entries = crate::shared::conversation_source(artifact_source)
-                .parse(&artifact_path, true)?
-                .into_iter()
-                .filter(|entry| entry.session_id == session_id)
-                .collect();
+            let entries = crate::shared::read_conversation(
+                artifact_source,
+                &artifact_path,
+                session_id,
+                true,
+            )?;
             return self.format_session_entries(entries, session_id, &args);
         };
 
@@ -1518,7 +1519,6 @@ Task(
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()
@@ -1530,7 +1530,6 @@ Task(
             let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
-            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()

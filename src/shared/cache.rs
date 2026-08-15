@@ -6,7 +6,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -98,14 +98,13 @@ impl CacheManager {
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
             if !file_path.exists() {
-                if self
-                    .metadata
-                    .indexed_files
-                    .remove(&file_path)
-                    .is_some()
-                {
-                    debug!("Removed deleted file from cache: {}", file_path.display());
-                }
+                // A client may remove an old transcript between discovery and
+                // parsing. Keep its committed document and metadata: automatic
+                // indexing is additive and must not delete retained history.
+                debug!(
+                    "Skipping unavailable source artifact while retaining indexed history: {}",
+                    file_path.display()
+                );
                 continue;
             }
             if !self.needs_indexing(&file_path)? {
@@ -252,40 +251,6 @@ impl CacheManager {
         }
 
         Ok(())
-    }
-
-    /// Remove indexed artifacts absent from a complete discovery result. This
-    /// must not be used for targeted single-artifact refreshes.
-    pub fn remove_missing_files(
-        &mut self,
-        indexer: &mut SearchIndexer,
-        discovered_files: &[PathBuf],
-    ) -> Result<usize> {
-        let discovered: HashSet<_> = discovered_files
-            .iter()
-            .collect();
-        let missing: Vec<_> = self
-            .metadata
-            .indexed_files
-            .iter()
-            .filter(|(path, _)| !path.exists() || !discovered.contains(path))
-            .map(|(path, metadata)| (path.clone(), metadata.source))
-            .collect();
-
-        for (path, source) in &missing {
-            indexer.delete_artifact(*source, path)?;
-            self.metadata
-                .indexed_files
-                .remove(path);
-            debug!("Removed missing source artifact: {}", path.display());
-        }
-
-        if !missing.is_empty() {
-            indexer.commit()?;
-            self.refresh_derived_metadata();
-            self.save_metadata()?;
-        }
-        Ok(missing.len())
     }
 
     fn refresh_derived_metadata(&mut self) {
@@ -593,5 +558,156 @@ impl std::fmt::Display for IndexHealth {
         )?;
         writeln!(f, "Status: {:?}", self.status)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::{ConversationEntry, MessageType, SearchEngine, SearchIndexer, Source};
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    #[test]
+    fn automatic_indexing_retains_a_conversation_after_its_source_disappears() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-retained.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &artifact,
+        )
+        .unwrap();
+
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        assert_eq!(
+            cache
+                .get_basic_stats()
+                .0,
+            1
+        );
+
+        std::fs::remove_file(&artifact).unwrap();
+        // A source can disappear after discovery but before parsing. The
+        // incremental boundary must retain its committed search document and
+        // cache metadata in that race too.
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_basic_stats()
+                .0,
+            1
+        );
+    }
+
+    #[test]
+    fn missing_claude_and_codex_artifacts_remain_searchable() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+
+        for source in [Source::Claude, Source::Codex] {
+            let session_id = format!("{source}-retained");
+            let artifact = temporary
+                .path()
+                .join(format!("{source}-missing.jsonl"));
+            indexer
+                .index_conversations(vec![ConversationEntry {
+                    source,
+                    uuid: format!("{source}-message"),
+                    parent_uuid: None,
+                    session_id: session_id.clone(),
+                    source_artifact: artifact.clone(),
+                    project_path: "retention-test".to_string(),
+                    timestamp: Utc::now(),
+                    message_type: MessageType::User,
+                    record_kind: Default::default(),
+                    content: format!("{source} durable searchable history"),
+                    model: None,
+                    cwd: None,
+                    sequence_num: 0,
+                    is_sidechain: false,
+                    agent_id: None,
+                    technologies: Vec::new(),
+                    has_code: false,
+                    code_languages: Vec::new(),
+                    has_error: false,
+                    tools_mentioned: Vec::new(),
+                }])
+                .unwrap();
+            cache
+                .metadata
+                .indexed_files
+                .insert(
+                    artifact,
+                    FileMetadata {
+                        size_hex: "0".to_string(),
+                        size: 0,
+                        modified: Utc::now(),
+                        indexed_at: Utc::now(),
+                        entry_count: 1,
+                        source,
+                        parser_version: parser_version(source),
+                        conversation_counts: HashMap::from([(
+                            source.conversation_key(&session_id),
+                            1,
+                        )]),
+                    },
+                );
+        }
+        indexer
+            .commit()
+            .unwrap();
+        cache.refresh_derived_metadata();
+        cache
+            .save_metadata()
+            .unwrap();
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        for source in [Source::Claude, Source::Codex] {
+            assert_eq!(
+                engine
+                    .get_conversation_messages(source, &format!("{source}-retained"))
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
     }
 }

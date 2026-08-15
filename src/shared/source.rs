@@ -110,14 +110,13 @@ impl ConversationSource for ClaudeWebSource {
     }
 
     fn parser_version(&self) -> u32 {
-        // v2 preserves export titles in the legacy `cwd` display field too.
-        2
+        // v3 parses durable per-conversation imports and preserves rich export
+        // text/attachment labels instead of dropping empty `text` messages.
+        3
     }
 
     fn discover(&self) -> Result<Vec<PathBuf>> {
-        Ok(super::path_utils::claude_export_path()
-            .into_iter()
-            .collect())
+        super::claude_web_import::discover_managed_exports()
     }
 
     fn parse(&self, path: &Path, _full_content: bool) -> Result<Vec<ConversationEntry>> {
@@ -172,6 +171,22 @@ pub fn conversation_source(source: Source) -> &'static dyn ConversationSource {
 
 pub fn conversation_sources() -> [&'static dyn ConversationSource; 3] {
     [&CLAUDE_SOURCE, &CLAUDE_WEB_SOURCE, &CODEX_SOURCE]
+}
+
+/// Read one source-qualified conversation from its source artifact. This
+/// filter is required for legacy shared archives and is a no-op for managed
+/// Claude web imports, which use one artifact per conversation.
+pub fn read_conversation(
+    source: Source,
+    artifact: &Path,
+    session_id: &str,
+    full_content: bool,
+) -> Result<Vec<ConversationEntry>> {
+    Ok(conversation_source(source)
+        .parse(artifact, full_content)?
+        .into_iter()
+        .filter(|entry| entry.session_id == session_id)
+        .collect())
 }
 
 impl fmt::Display for Source {

@@ -6,12 +6,17 @@ use clap::{Subcommand, ValueEnum};
 use regex::Regex;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Subcommand)]
 pub enum CliCommands {
+    /// Import a one-off conversation archive into agent-recall managed storage
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
     /// Index management
     Index {
         #[command(subcommand)]
@@ -150,6 +155,15 @@ pub enum CliCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ImportSource {
+    /// Import a downloaded Claude web/desktop `conversations.json` export
+    ClaudeWeb {
+        /// Path to the downloaded `conversations.json` file
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum CacheAction {
     /// Show cache statistics
     Info,
@@ -254,6 +268,16 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
     setup_logging(verbose);
 
     match command {
+        CliCommands::Import { source } => match source {
+            ImportSource::ClaudeWeb { path } => {
+                let imported = shared::import_claude_web_export(&path)?;
+                let index_path = shared::get_config().get_cache_dir()?;
+                shared::auto_index(&index_path)?;
+                println!(
+                    "Imported {imported} Claude web conversations into managed storage and indexed them."
+                );
+            }
+        },
         CliCommands::Index { action } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
@@ -1116,7 +1140,7 @@ fn view_session(
                 .source_artifact
                 .exists()
         {
-            shared::conversation_source(first.source).parse(&first.source_artifact, true)?
+            shared::read_conversation(first.source, &first.source_artifact, &session_id, true)?
         } else {
             eprintln!(
                 "Warning: source artifact not found, falling back to index (content may be truncated)"

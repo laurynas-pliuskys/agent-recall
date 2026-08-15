@@ -114,7 +114,6 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
     // would incorrectly mark every source artifact as already indexed.
     let mut cache_manager = CacheManager::new(index_path)?;
     let all_files = discover_jsonl_files()?;
-    cache_manager.remove_missing_files(&mut indexer, &all_files)?;
     cache_manager.update_incremental(&mut indexer, all_files)?;
     Ok(())
 }
