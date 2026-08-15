@@ -99,9 +99,10 @@ upserts matching native conversation IDs and retains IDs absent from the newer
 export, so an import never silently deletes history. Search it with
 `agent-recall search "query" --source claude-web`.
 
-Claude web normalization includes human-visible `text`/`content` blocks plus
-file and attachment names with MIME labels. It deliberately does not stringify
-opaque attachment or internal JSON payloads. Native conversation/message IDs,
+Claude web normalization includes human-visible text blocks plus file and
+attachment names with MIME labels. It deliberately does not stringify hidden
+messages, tool results, thinking, opaque attachment, or internal JSON payloads.
+Native conversation/message IDs,
 timestamps, and message order are retained in the managed raw source.
 
 ### Codex-only workstation
@@ -168,6 +169,13 @@ raw files are stored separately; it cannot restore deleted Claude Code/Codex
 transcripts that are no longer on disk. Ordinary auto-indexing never removes
 previously indexed conversations merely because an original transcript
 disappeared.
+
+If retained native source artifacts are already missing, rebuild, vacuum, and
+MCP full reindex refuse by default and report the count. Use
+`agent-recall index rebuild --allow-history-loss` (or MCP
+`allow_history_loss=true`) only to deliberately discard that retained history.
+`agent-recall cache clear` is always destructive and permanently drops the
+index's retained history.
 
 ### `agent-recall search <query>`
 Search through your indexed conversations.

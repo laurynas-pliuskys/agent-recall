@@ -243,9 +243,17 @@ pub enum IndexAction {
     #[default]
     Status,
     /// Force full rebuild of the index
-    Rebuild,
+    Rebuild {
+        /// Acknowledge that deleted native source artifacts cannot be restored
+        #[arg(long)]
+        allow_history_loss: bool,
+    },
     /// Clean up deleted entries from index
-    Vacuum,
+    Vacuum {
+        /// Acknowledge that deleted native source artifacts cannot be restored
+        #[arg(long)]
+        allow_history_loss: bool,
+    },
 }
 
 pub fn setup_logging(verbose: u8) {
@@ -272,9 +280,10 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             ImportSource::ClaudeWeb { path } => {
                 let imported = shared::import_claude_web_export(&path)?;
                 let index_path = shared::get_config().get_cache_dir()?;
-                shared::auto_index(&index_path)?;
+                shared::index_now_forced(&index_path, imported.clone())?;
                 println!(
-                    "Imported {imported} Claude web conversations into managed storage and indexed them."
+                    "Imported {} Claude web conversations into managed storage and indexed them.",
+                    imported.len()
                 );
             }
         },
@@ -283,8 +292,12 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
             let index_path = config.get_cache_dir()?;
             match action.unwrap_or_default() {
                 IndexAction::Status => index::show_status(&index_path)?,
-                IndexAction::Rebuild => index::rebuild(&index_path)?,
-                IndexAction::Vacuum => index::vacuum(&index_path)?,
+                IndexAction::Rebuild { allow_history_loss } => {
+                    index::rebuild(&index_path, allow_history_loss)?
+                }
+                IndexAction::Vacuum { allow_history_loss } => {
+                    index::vacuum(&index_path, allow_history_loss)?
+                }
             }
         }
         CliCommands::Completions { .. } => unreachable!("Completions handled in main"),
@@ -669,7 +682,9 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 fn clear_cache(index_path: &Path) -> Result<()> {
     let mut cache_manager = CacheManager::new(index_path)?;
     cache_manager.clear_cache()?;
-    println!("Cache cleared successfully. Run 'agent-recall index' to rebuild.");
+    println!(
+        "Cache cleared. Retained indexed history was permanently discarded; run 'agent-recall index' to rebuild from available sources."
+    );
     Ok(())
 }
 

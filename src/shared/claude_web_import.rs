@@ -13,15 +13,29 @@ pub fn managed_import_dir() -> Result<PathBuf> {
     let data_dir = dirs::data_local_dir()
         .or_else(dirs::data_dir)
         .ok_or_else(|| anyhow!("Could not determine a local data directory"))?;
-    Ok(data_dir
-        .join("agent-recall")
-        .join("imports")
-        .join(IMPORT_DIRECTORY))
+    let root = data_dir.join("agent-recall");
+    let imports = root.join("imports");
+    let destination = imports.join(IMPORT_DIRECTORY);
+    ensure_private_directory(&root)?;
+    ensure_private_directory(&imports)?;
+    ensure_private_directory(&destination)?;
+    Ok(destination)
+}
+
+/// Create or repair a directory that contains personal conversation exports.
+pub fn ensure_private_directory(directory: &Path) -> Result<()> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Import an export into durable managed storage and return the number of
 /// source-native conversations imported.
-pub fn import_claude_web_export(input: &Path) -> Result<usize> {
+pub fn import_claude_web_export(input: &Path) -> Result<Vec<PathBuf>> {
     let destination = managed_import_dir()?;
     super::claude_export_parser::import_export_file(input, &destination)
 }
@@ -76,8 +90,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            super::super::claude_export_parser::import_export_file(&source, &managed).unwrap(),
-            2
+            super::super::claude_export_parser::import_export_file(&source, &managed)
+                .unwrap()
+                .len(),
+            2,
         );
 
         std::fs::write(
@@ -86,8 +102,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            super::super::claude_export_parser::import_export_file(&source, &managed).unwrap(),
-            1
+            super::super::claude_export_parser::import_export_file(&source, &managed)
+                .unwrap()
+                .len(),
+            1,
         );
         assert!(
             managed
@@ -98,6 +116,38 @@ mod tests {
             managed
                 .join("conversation-two.claude-web.json")
                 .exists()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_directories_and_artifacts_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = TempDir::new().unwrap();
+        let source = temporary
+            .path()
+            .join("export.json");
+        let managed = temporary
+            .path()
+            .join("managed");
+        std::fs::write(&source, r#"[{"uuid":"one","chat_messages":[]}]"#).unwrap();
+        let artifacts =
+            super::super::claude_export_parser::import_export_file(&source, &managed).unwrap();
+        assert_eq!(
+            std::fs::metadata(&managed)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&artifacts[0])
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 }

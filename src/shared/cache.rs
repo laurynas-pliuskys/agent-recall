@@ -36,6 +36,10 @@ pub struct FileMetadata {
     pub parser_version: u32,
     #[serde(default)]
     pub conversation_counts: HashMap<String, usize>,
+    /// Primary-index records per source-qualified conversation. This lets a
+    /// moved source artifact supersede only its matching conversations.
+    #[serde(default)]
+    pub conversation_entry_counts: HashMap<String, usize>,
 }
 
 fn parser_version(source: Source) -> u32 {
@@ -94,6 +98,26 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
+        self.update_incremental_with_mode(indexer, files, false)
+    }
+
+    /// Reparse supplied artifacts even when their size and coarse mtime match.
+    /// Explicit import uses this to make same-second, same-size replacement
+    /// deterministic.
+    pub fn update_incremental_forced(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        files: Vec<PathBuf>,
+    ) -> Result<()> {
+        self.update_incremental_with_mode(indexer, files, true)
+    }
+
+    fn update_incremental_with_mode(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        files: Vec<PathBuf>,
+        force: bool,
+    ) -> Result<()> {
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
@@ -107,7 +131,7 @@ impl CacheManager {
                 );
                 continue;
             }
-            if !self.needs_indexing(&file_path)? {
+            if !force && !self.needs_indexing(&file_path)? {
                 debug!("Skipping unchanged file: {}", file_path.display());
                 continue;
             }
@@ -187,6 +211,22 @@ impl CacheManager {
                 .filter(|entry| source_adapter.is_primary_index_record(entry))
                 .collect();
             let entry_count = entries.len();
+            let mut conversation_entry_counts = HashMap::new();
+            for entry in &entries {
+                *conversation_entry_counts
+                    .entry(
+                        entry
+                            .source
+                            .conversation_key(&entry.session_id),
+                    )
+                    .or_insert(0) += 1;
+            }
+            self.reconcile_moved_conversations(
+                indexer,
+                parsed_file.source,
+                &parsed_file.path,
+                &conversation_entry_counts,
+            )?;
             indexer.delete_artifact(parsed_file.source, &parsed_file.path)?;
 
             let mut conversation_counts = HashMap::new();
@@ -225,6 +265,7 @@ impl CacheManager {
                         source: parsed_file.source,
                         parser_version: parser_version(parsed_file.source),
                         conversation_counts,
+                        conversation_entry_counts,
                     },
                 );
             files_processed += 1;
@@ -250,6 +291,70 @@ impl CacheManager {
             info!("No files needed indexing");
         }
 
+        Ok(())
+    }
+
+    fn reconcile_moved_conversations(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        source: Source,
+        replacement_path: &Path,
+        incoming: &HashMap<String, usize>,
+    ) -> Result<()> {
+        let affected: Vec<_> = self
+            .metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, metadata)| {
+                *path != replacement_path
+                    && metadata.source == source
+                    && incoming
+                        .keys()
+                        .any(|conversation| {
+                            metadata
+                                .conversation_entry_counts
+                                .contains_key(conversation)
+                        })
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        for conversation in incoming.keys() {
+            indexer.delete_conversation(
+                source,
+                conversation
+                    .split_once('\0')
+                    .map_or(conversation, |(_, id)| id),
+            )?;
+        }
+        for path in affected {
+            let mut remove_artifact = false;
+            if let Some(metadata) = self
+                .metadata
+                .indexed_files
+                .get_mut(&path)
+            {
+                for conversation in incoming.keys() {
+                    if let Some(count) = metadata
+                        .conversation_entry_counts
+                        .remove(conversation)
+                    {
+                        metadata.entry_count = metadata
+                            .entry_count
+                            .saturating_sub(count);
+                        metadata
+                            .conversation_counts
+                            .remove(conversation);
+                    }
+                }
+                remove_artifact = metadata.entry_count == 0;
+            }
+            if remove_artifact {
+                self.metadata
+                    .indexed_files
+                    .remove(&path);
+            }
+        }
         Ok(())
     }
 
@@ -305,6 +410,17 @@ impl CacheManager {
             self.metadata
                 .last_full_scan,
         )
+    }
+
+    /// Native client artifacts missing from disk that would be lost by a
+    /// destructive cache rebuild. Managed Claude web imports have their own
+    /// durable storage and are intentionally excluded.
+    pub fn missing_native_artifact_count(&self) -> usize {
+        self.metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, metadata)| metadata.source != Source::ClaudeWeb && !path.exists())
+            .count()
     }
 
     /// Get cached session interaction counts
@@ -682,6 +798,10 @@ mod tests {
                             source.conversation_key(&session_id),
                             1,
                         )]),
+                        conversation_entry_counts: HashMap::from([(
+                            source.conversation_key(&session_id),
+                            1,
+                        )]),
                     },
                 );
         }
@@ -692,6 +812,8 @@ mod tests {
         cache
             .save_metadata()
             .unwrap();
+
+        assert_eq!(cache.missing_native_artifact_count(), 2);
 
         let engine = SearchEngine::new(
             &cache_dir,
@@ -709,5 +831,93 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn moved_artifact_supersedes_source_qualified_conversations() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let original = temporary
+            .path()
+            .join("conversation-original.claude-web.json");
+        let moved = temporary
+            .path()
+            .join("conversation-moved.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &original,
+        )
+        .unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![original.clone()])
+            .unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![moved])
+            .unwrap();
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_session_counts()
+                .get(&Source::ClaudeWeb.conversation_key("conversation-a")),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn forced_import_refreshes_same_size_same_second_artifact() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-refresh.claude-web.json");
+        let initial = r#"{"uuid":"same","name":"Same","chat_messages":[{"uuid":"m","text":"alpha","sender":"human","created_at":"2026-01-01T00:00:00Z"}]}"#;
+        let replacement = initial.replace("alpha", "bravo");
+        assert_eq!(initial.len(), replacement.len());
+        std::fs::write(&artifact, initial).unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        std::fs::write(&artifact, replacement).unwrap();
+        cache
+            .update_incremental_forced(&mut indexer, vec![artifact])
+            .unwrap();
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "same")
+                .unwrap()[0]
+                .content,
+            "bravo"
+        );
     }
 }

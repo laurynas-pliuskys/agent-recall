@@ -5,9 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Write};
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 /// Parser for the `conversations.json` archive exported by Claude's web client.
@@ -43,6 +43,10 @@ struct ExportMessage {
     files: Value,
     #[serde(default)]
     attachments: Value,
+    #[serde(default)]
+    hidden_in_chat: bool,
+    #[serde(default)]
+    is_hidden: bool,
 }
 
 impl ClaudeExportParser {
@@ -69,6 +73,9 @@ impl ClaudeExportParser {
                 .into_iter()
                 .enumerate()
             {
+                if message.hidden_in_chat || message.is_hidden {
+                    continue;
+                }
                 let message_type = match message
                     .sender
                     .as_str()
@@ -136,7 +143,7 @@ impl ClaudeExportParser {
 /// a later parser upgrade can re-normalize it without needing the user's
 /// Downloads copy. Existing conversation IDs are atomically replaced; IDs
 /// absent from a later import are intentionally retained as history.
-pub fn import_export_file(input: &Path, destination: &Path) -> Result<usize> {
+pub fn import_export_file(input: &Path, destination: &Path) -> Result<Vec<PathBuf>> {
     let raw_conversations = read_export_values(input)?;
     let mut staged = Vec::with_capacity(raw_conversations.len());
 
@@ -156,19 +163,31 @@ pub fn import_export_file(input: &Path, destination: &Path) -> Result<usize> {
         staged.push((filename, serde_json::to_vec_pretty(&raw)?));
     }
 
-    std::fs::create_dir_all(destination)?;
-    let imported = staged.len();
+    super::claude_web_import::ensure_private_directory(destination)?;
+    let mut imported = Vec::with_capacity(staged.len());
     for (filename, content) in staged {
-        let output = destination.join(filename);
-        let temporary = output.with_extension("json.tmp");
-        std::fs::write(&temporary, content)?;
+        let output = destination.join(&filename);
+        let temporary = destination.join(format!(".import-{}.tmp", uuid::Uuid::new_v4()));
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&content)?;
+        file.sync_all()?;
         // On Unix this replaces the prior conversation atomically. On Windows
         // a managed import is still safe, but rename cannot replace a target.
         #[cfg(windows)]
         if output.exists() {
             std::fs::remove_file(&output)?;
         }
-        std::fs::rename(temporary, output)?;
+        std::fs::rename(temporary, &output)?;
+        imported.push(output);
     }
     Ok(imported)
 }
@@ -236,11 +255,30 @@ fn extract_visible_content(value: &Value, parts: &mut Vec<String>, depth: usize)
             }
         }
         Value::Object(object) => {
-            if let Some(Value::String(text)) = object.get("text") {
-                push_nonempty(parts, text);
+            if object
+                .get("hidden_in_chat")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || object
+                    .get("is_hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                return;
             }
-            if let Some(content) = object.get("content") {
-                extract_visible_content(content, parts, depth + 1);
+            match object
+                .get("type")
+                .and_then(Value::as_str)
+            {
+                Some("text" | "input_text" | "output_text") | None => {
+                    if let Some(Value::String(text)) = object.get("text") {
+                        push_nonempty(parts, text);
+                    }
+                }
+                // Do not recurse into `content`: real tool_result blocks can
+                // contain very large opaque payloads. The raw managed export
+                // remains available for future, source-scoped handling.
+                _ => {}
             }
         }
         _ => {}
@@ -325,6 +363,16 @@ mod tests {
         assert_eq!(
             entries[2].content,
             "A separate topic from structured content.\n[Attached file: design.md (text/markdown)]\n[Attachment: wireframe.png (image/png)]"
+        );
+        assert!(
+            !entries[2]
+                .content
+                .contains("SECRET_TOOL_PAYLOAD")
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.uuid != "message-b2")
         );
     }
 

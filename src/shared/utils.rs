@@ -7,7 +7,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
 pub fn get_cache_dir() -> Result<PathBuf> {
     get_config().get_cache_dir()
@@ -49,25 +49,33 @@ pub fn truncate_content(s: &str, max_chars: usize, collapse_whitespace: bool) ->
 }
 
 pub fn auto_index(index_path: &Path) -> Result<()> {
-    let config = get_config();
-
-    // Skip auto-indexing if disabled in config
-    if !config
+    if !get_config()
         .index
         .auto_index_on_startup
     {
         return Ok(());
     }
+    index_now(index_path)
+}
 
+/// Run an explicit incremental indexing operation. Unlike [`auto_index`], an
+/// explicit caller never honors the startup convenience switch.
+pub fn index_now(index_path: &Path) -> Result<()> {
+    index_now_with_forced_files(index_path, None)
+}
+
+/// Explicitly index selected artifacts even if their mtime and size appear
+/// unchanged. Used after replacing managed import files.
+pub fn index_now_forced(index_path: &Path, files: Vec<PathBuf>) -> Result<()> {
+    index_now_with_forced_files(index_path, Some(files))
+}
+
+fn index_now_with_forced_files(
+    index_path: &Path,
+    forced_files: Option<Vec<PathBuf>>,
+) -> Result<()> {
     // Try to acquire exclusive lock for indexing
-    let _lock = match ExclusiveIndexAccess::acquire() {
-        Ok(lock) => lock,
-        Err(_) => {
-            // Another process is already indexing, skip
-            info!("Skipping auto-index: another process is currently indexing");
-            return Ok(());
-        }
-    };
+    let _lock = ExclusiveIndexAccess::acquire()?;
 
     let mut indexer = if index_path
         .join("meta.json")
@@ -79,41 +87,54 @@ pub fn auto_index(index_path: &Path) -> Result<()> {
                 // Schema is valid, open existing index
                 SearchIndexer::open(index_path)?
             }
-            Ok(false) => {
-                // Schema mismatch, rebuild
-                info!("Index schema mismatch detected. Rebuilding index...");
-
-                // Remove the old index
-                if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
-                    warn!("Failed to remove old index: {}", rm_err);
-                }
-
-                // Create new index
-                SearchIndexer::new(index_path)?
-            }
-            Err(e) => {
-                // Failed to validate (corrupted index), rebuild
-                warn!("Failed to validate index: {}. Rebuilding...", e);
-
-                // Remove the corrupted index
-                if let Err(rm_err) = std::fs::remove_dir_all(index_path) {
-                    warn!("Failed to remove corrupted index: {}", rm_err);
-                }
-
-                // Create new index
-                SearchIndexer::new(index_path)?
-            }
+            Ok(false) => anyhow::bail!(
+                "Index schema mismatch; automatic indexing will not discard retained history. Run `agent-recall index rebuild --allow-history-loss` after reviewing the consequences."
+            ),
+            Err(error) => anyhow::bail!(
+                "Index validation failed ({error}); automatic indexing will not discard retained history. Repair the index or run `agent-recall index rebuild --allow-history-loss` deliberately."
+            ),
         }
     } else {
         info!("No index found, creating new one...");
         SearchIndexer::new(index_path)?
     };
 
-    // Construct cache metadata after schema handling. A schema mismatch removes
-    // the whole cache directory, so retaining metadata loaded before that point
-    // would incorrectly mark every source artifact as already indexed.
     let mut cache_manager = CacheManager::new(index_path)?;
-    let all_files = discover_jsonl_files()?;
-    cache_manager.update_incremental(&mut indexer, all_files)?;
+    if let Some(files) = forced_files {
+        cache_manager.update_incremental_forced(&mut indexer, files)?;
+    } else {
+        let all_files = discover_jsonl_files()?;
+        cache_manager.update_incremental(&mut indexer, all_files)?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn invalid_existing_index_is_preserved_for_explicit_recovery() {
+        let temporary = TempDir::new().unwrap();
+        let index = temporary
+            .path()
+            .join("index");
+        let marker = index.join("meta.json");
+        std::fs::create_dir_all(&index).unwrap();
+        let mut builder = tantivy::schema::Schema::builder();
+        builder.add_text_field("wrong", tantivy::schema::TEXT);
+        let invalid = tantivy::Index::create_in_dir(&index, builder.build()).unwrap();
+        invalid
+            .writer::<tantivy::TantivyDocument>(15_000_000)
+            .unwrap()
+            .commit()
+            .unwrap();
+        drop(invalid);
+        assert!(marker.exists());
+        assert!(!SearchIndexer::validate_schema(&index).unwrap());
+
+        assert!(index_now(&index).is_err());
+        assert!(marker.exists());
+    }
 }

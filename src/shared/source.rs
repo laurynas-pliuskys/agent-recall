@@ -12,6 +12,7 @@ use anyhow::Result;
 pub enum Source {
     #[default]
     Claude,
+    #[serde(rename = "claude-web", alias = "claudeweb")]
     ClaudeWeb,
     Codex,
 }
@@ -227,6 +228,14 @@ mod tests {
         assert_eq!("claude".parse::<Source>(), Ok(Source::Claude));
         assert_eq!("claude-web".parse::<Source>(), Ok(Source::ClaudeWeb));
         assert_eq!("Codex".parse::<Source>(), Ok(Source::Codex));
+        assert_eq!(
+            serde_json::to_string(&Source::ClaudeWeb).unwrap(),
+            "\"claude-web\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Source>("\"claudeweb\"").unwrap(),
+            Source::ClaudeWeb
+        );
         assert!(
             "unknown"
                 .parse::<Source>()

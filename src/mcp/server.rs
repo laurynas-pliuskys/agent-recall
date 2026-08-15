@@ -404,7 +404,8 @@ impl McpServer {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "full": { "type": "boolean", "description": "Force full rebuild (default: incremental)", "optional": true }
+                        "full": { "type": "boolean", "description": "Force full rebuild (default: incremental)", "optional": true },
+                        "allow_history_loss": { "type": "boolean", "description": "Required to discard retained records whose native source artifacts are missing", "optional": true }
                     }
                 }),
             },
@@ -1507,9 +1508,20 @@ Task(
             .get("full")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let allow_history_loss = args
+            .get("allow_history_loss")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
+            let existing_cache = crate::shared::CacheManager::new(&self.cache_dir)?;
+            let missing = existing_cache.missing_native_artifact_count();
+            if missing > 0 && !allow_history_loss {
+                anyhow::bail!(
+                    "Refusing full rebuild: {missing} indexed native source artifact(s) are missing and their retained history would be permanently lost. Retry with allow_history_loss=true to acknowledge this."
+                );
+            }
             // Full rebuild - clear and recreate
             if self
                 .cache_dir
