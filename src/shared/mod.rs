@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod claude_export_parser;
 pub mod codex_parser;
 pub mod config;
 pub mod indexer;

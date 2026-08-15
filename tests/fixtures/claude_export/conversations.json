@@ -1,0 +1,17 @@
+[
+  {
+    "uuid": "conversation-a",
+    "name": "First conversation",
+    "chat_messages": [
+      {"uuid": "message-a1", "text": "Please help with a parser.", "sender": "human", "created_at": "2026-01-02T03:04:05Z", "parent_message_uuid": null},
+      {"uuid": "message-a2", "text": "Here is the parser design.", "sender": "assistant", "created_at": "2026-01-02T03:04:06Z", "parent_message_uuid": "message-a1"}
+    ]
+  },
+  {
+    "uuid": "conversation-b",
+    "name": null,
+    "chat_messages": [
+      {"uuid": "message-b1", "text": "A separate topic.", "sender": "human", "created_at": "2026-01-03T03:04:05Z", "parent_message_uuid": null}
+    ]
+  }
+]

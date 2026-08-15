@@ -1,6 +1,6 @@
 # Agent Recall
 
-**CLI + MCP service for searching Claude Code and Codex conversation history.**
+**CLI + MCP service for searching Claude Code, Claude web exports, and Codex conversation history.**
 
 A single binary that works two ways:
 - **CLI**: Search your conversations from the terminal (`agent-recall search "rust async"`)
@@ -17,7 +17,7 @@ If you work across **dozens of projects**, you know the pain:
 - "What was that regex pattern I used for parsing logs?"
 - "How did I configure that Docker setup?"
 
-This tool indexes **Claude Code and Codex conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
+This tool indexes **Claude Code and Codex conversations across all projects**, plus an explicitly configured Claude web export, and lets your agent search them instantly. No more digging through folders or re-explaining context.
 
 > **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
 
@@ -79,6 +79,20 @@ agent-recall index rebuild
 
 To register just one client, use `agent-recall install --client claude` or
 `agent-recall install --client codex`.
+
+### Optional Claude web export
+
+To index a downloaded Claude web/desktop export, explicitly configure its
+`conversations.json` path. Agent Recall does not scan Downloads automatically.
+
+```yaml
+# ~/.config/agent-recall/config.yaml
+index:
+  claude_export_path: /absolute/path/to/Claude-backup/conversations.json
+```
+
+Then run `agent-recall index rebuild`. Search it with
+`agent-recall search "query" --source claude-web`.
 
 ### Codex-only workstation
 

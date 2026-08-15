@@ -279,8 +279,8 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
-                            "description": "Filter by conversation source client (claude or codex)",
+                            "enum": ["claude", "claude-web", "codex"],
+                            "description": "Filter by conversation source client",
                             "optional": true
                         },
                         "project": {
@@ -420,7 +420,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for an otherwise ambiguous session ID",
                             "optional": true
                         },
@@ -485,7 +485,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for an otherwise ambiguous session ID",
                             "optional": true
                         }
@@ -506,7 +506,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for otherwise ambiguous message IDs",
                             "optional": true
                         },
@@ -974,8 +974,11 @@ impl McpServer {
             self.ensure_artifact_fresh(&artifact_path)?;
 
             // Read the source artifact directly for full-fidelity content.
-            let entries =
-                crate::shared::conversation_source(artifact_source).parse(&artifact_path, true)?;
+            let entries = crate::shared::conversation_source(artifact_source)
+                .parse(&artifact_path, true)?
+                .into_iter()
+                .filter(|entry| entry.session_id == session_id)
+                .collect();
             return self.format_session_entries(entries, session_id, &args);
         };
 

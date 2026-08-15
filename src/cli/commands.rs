@@ -21,7 +21,7 @@ pub enum CliCommands {
     Search {
         /// Search query
         query: String,
-        /// Filter by source client (claude or codex)
+        /// Filter by source client (claude, claude-web, or codex)
         #[arg(long)]
         source: Option<String>,
         /// Filter by project

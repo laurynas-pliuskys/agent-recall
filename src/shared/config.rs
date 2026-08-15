@@ -19,6 +19,10 @@ pub struct IndexConfig {
     pub enable_tagging: bool,
     pub cache_dir: Option<PathBuf>,
     pub claude_dir: Option<PathBuf>,
+    /// Optional path to a Claude web/desktop export `conversations.json`.
+    /// This is opt-in because exports can contain personal account history.
+    #[serde(default)]
+    pub claude_export_path: Option<PathBuf>,
 }
 
 impl IndexConfig {
@@ -39,6 +43,7 @@ impl Default for IndexConfig {
             enable_tagging: false,
             cache_dir: None,
             claude_dir: None,
+            claude_export_path: None,
         }
     }
 }
