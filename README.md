@@ -1,6 +1,6 @@
 # Agent Recall
 
-**CLI + MCP service for searching Claude Code and Codex conversation history.**
+**CLI + MCP service for searching Claude Code, Claude web exports, and Codex conversation history.**
 
 A single binary that works two ways:
 - **CLI**: Search your conversations from the terminal (`agent-recall search "rust async"`)
@@ -17,9 +17,12 @@ If you work across **dozens of projects**, you know the pain:
 - "What was that regex pattern I used for parsing logs?"
 - "How did I configure that Docker setup?"
 
-This tool indexes **Claude Code and Codex conversations across all projects** and lets your agent search them instantly. No more digging through folders or re-explaining context.
+This tool indexes **Claude Code and Codex conversations across all projects**, plus explicitly imported Claude web exports, and lets your agent search them instantly. No more digging through folders or re-explaining context.
 
-> **Warning**: Claude Code auto-deletes old conversations! Check `~/.claude/settings.json` for `cleanupPeriodDays` - this deletes conversations older than N days (0 = immediate deletion!). Set it to `999999999` to keep your history.
+Once a conversation has entered the index, automatic incremental scans retain
+its searchable primary records even if Claude Code or Codex later removes the
+original transcript. Source-backed Codex tool-reference retrieval still needs
+the original rollout unless that rollout remains available.
 
 ## Why This Tool?
 
@@ -80,6 +83,28 @@ agent-recall index rebuild
 To register just one client, use `agent-recall install --client claude` or
 `agent-recall install --client codex`.
 
+### Import a Claude web export
+
+Claude web/desktop exports are a one-off import, not a configured live source.
+Import the downloaded `conversations.json` explicitly; Agent Recall never
+scans Downloads automatically.
+
+```bash
+agent-recall import claude-web /absolute/path/to/Claude-backup/conversations.json
+```
+
+The command copies each conversation's raw export object to managed local data
+storage and indexes it. The original download may then disappear. Re-importing
+upserts matching native conversation IDs and retains IDs absent from the newer
+export, so an import never silently deletes history. Search it with
+`agent-recall search "query" --source claude-web`.
+
+Claude web normalization includes human-visible text blocks plus file and
+attachment names with MIME labels. It deliberately does not stringify hidden
+messages, tool results, thinking, opaque attachment, or internal JSON payloads.
+Native conversation/message IDs,
+timestamps, and message order are retained in the managed raw source.
+
 ### Codex-only workstation
 
 ```bash
@@ -132,10 +157,25 @@ agent-recall index rebuild      # Force full rebuild (recreates index)
 ```
 
 **What `index rebuild` does:**
-- Scans Claude Code and Codex transcript directories for `*.jsonl` files
+- Scans Claude Code and Codex transcript directories plus managed Claude web imports
 - Parses conversation entries with timestamps, content, and metadata
 - Builds full-text search index using Tantivy
 - Index stored at `~/.cache/agent-recall/`
+
+`index rebuild` and MCP `reindex(full=true)` deliberately discard the
+searchable index before rebuilding it; `cache clear` discards it until the next
+index operation. A rebuild restores managed Claude web imports because their
+raw files are stored separately; it cannot restore deleted Claude Code/Codex
+transcripts that are no longer on disk. Ordinary auto-indexing never removes
+previously indexed conversations merely because an original transcript
+disappeared.
+
+If retained native source artifacts are already missing, rebuild, vacuum, and
+MCP full reindex refuse by default and report the count. Use
+`agent-recall index rebuild --allow-history-loss` (or MCP
+`allow_history_loss=true`) only to deliberately discard that retained history.
+`agent-recall cache clear` is always destructive and permanently drops the
+index's retained history.
 
 ### `agent-recall search <query>`
 Search through your indexed conversations.

@@ -6,8 +6,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -36,6 +37,10 @@ pub struct FileMetadata {
     pub parser_version: u32,
     #[serde(default)]
     pub conversation_counts: HashMap<String, usize>,
+    /// Primary-index records per source-qualified conversation. This lets a
+    /// moved source artifact supersede only its matching conversations.
+    #[serde(default)]
+    pub conversation_entry_counts: HashMap<String, usize>,
 }
 
 fn parser_version(source: Source) -> u32 {
@@ -50,11 +55,42 @@ pub struct CacheManager {
 
 impl CacheManager {
     pub fn new(cache_dir: &Path) -> Result<Self> {
+        Self::load(cache_dir, false)
+    }
+
+    /// Open cache metadata for an explicitly destructive reset.
+    ///
+    /// Ordinary reads must preserve the strict failure mode so corrupt
+    /// retention metadata can never be discarded implicitly. `cache clear`
+    /// and history-loss-acknowledged rebuilds may use this escape hatch
+    /// because the caller has already requested that retained history be
+    /// destroyed.
+    pub fn new_for_destructive_reset(cache_dir: &Path) -> Result<Self> {
+        Self::load(cache_dir, true)
+    }
+
+    fn load(cache_dir: &Path, discard_invalid_metadata: bool) -> Result<Self> {
         let metadata_file = cache_dir.join("cache-metadata.json");
 
         let metadata = if metadata_file.exists() {
             let content = fs::read_to_string(&metadata_file)?;
-            serde_json::from_str(&content).unwrap_or_default()
+            match serde_json::from_str(&content) {
+                Ok(metadata) => metadata,
+                Err(error) if discard_invalid_metadata => {
+                    warn!(
+                        "Discarding invalid cache metadata {} during an explicitly destructive reset: {}",
+                        metadata_file.display(),
+                        error
+                    );
+                    CacheMetadata::default()
+                }
+                Err(error) => {
+                    anyhow::bail!(
+                        "Could not parse cache metadata {}: {error}. Refusing to discard retention information; run `agent-recall cache clear` or `agent-recall index rebuild --allow-history-loss` to reset it deliberately.",
+                        metadata_file.display()
+                    );
+                }
+            }
         } else {
             CacheMetadata::default()
         };
@@ -94,21 +130,40 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
     ) -> Result<()> {
+        self.update_incremental_with_mode(indexer, files, false)
+    }
+
+    /// Reparse supplied artifacts even when their size and coarse mtime match.
+    /// Explicit import uses this to make same-second, same-size replacement
+    /// deterministic.
+    pub fn update_incremental_forced(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        files: Vec<PathBuf>,
+    ) -> Result<()> {
+        self.update_incremental_with_mode(indexer, files, true)
+    }
+
+    fn update_incremental_with_mode(
+        &mut self,
+        indexer: &mut SearchIndexer,
+        files: Vec<PathBuf>,
+        force: bool,
+    ) -> Result<()> {
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
             if !file_path.exists() {
-                if self
-                    .metadata
-                    .indexed_files
-                    .remove(&file_path)
-                    .is_some()
-                {
-                    debug!("Removed deleted file from cache: {}", file_path.display());
-                }
+                // A client may remove an old transcript between discovery and
+                // parsing. Keep its committed document and metadata: automatic
+                // indexing is additive and must not delete retained history.
+                debug!(
+                    "Skipping unavailable source artifact while retaining indexed history: {}",
+                    file_path.display()
+                );
                 continue;
             }
-            if !self.needs_indexing(&file_path)? {
+            if !force && !self.needs_indexing(&file_path)? {
                 debug!("Skipping unchanged file: {}", file_path.display());
                 continue;
             }
@@ -188,6 +243,22 @@ impl CacheManager {
                 .filter(|entry| source_adapter.is_primary_index_record(entry))
                 .collect();
             let entry_count = entries.len();
+            let mut conversation_entry_counts = HashMap::new();
+            for entry in &entries {
+                *conversation_entry_counts
+                    .entry(
+                        entry
+                            .source
+                            .conversation_key(&entry.session_id),
+                    )
+                    .or_insert(0) += 1;
+            }
+            self.reconcile_moved_conversations(
+                indexer,
+                parsed_file.source,
+                &parsed_file.path,
+                &conversation_entry_counts,
+            )?;
             indexer.delete_artifact(parsed_file.source, &parsed_file.path)?;
 
             let mut conversation_counts = HashMap::new();
@@ -226,6 +297,7 @@ impl CacheManager {
                         source: parsed_file.source,
                         parser_version: parser_version(parsed_file.source),
                         conversation_counts,
+                        conversation_entry_counts,
                     },
                 );
             files_processed += 1;
@@ -254,38 +326,92 @@ impl CacheManager {
         Ok(())
     }
 
-    /// Remove indexed artifacts absent from a complete discovery result. This
-    /// must not be used for targeted single-artifact refreshes.
-    pub fn remove_missing_files(
+    fn reconcile_moved_conversations(
         &mut self,
         indexer: &mut SearchIndexer,
-        discovered_files: &[PathBuf],
-    ) -> Result<usize> {
-        let discovered: HashSet<_> = discovered_files
-            .iter()
-            .collect();
-        let missing: Vec<_> = self
+        source: Source,
+        replacement_path: &Path,
+        incoming: &HashMap<String, usize>,
+    ) -> Result<()> {
+        let affected: Vec<_> = self
             .metadata
             .indexed_files
             .iter()
-            .filter(|(path, _)| !path.exists() || !discovered.contains(path))
-            .map(|(path, metadata)| (path.clone(), metadata.source))
+            .filter(|(path, metadata)| {
+                *path != replacement_path
+                    && metadata.source == source
+                    && incoming
+                        .keys()
+                        .any(|conversation| {
+                            metadata
+                                .conversation_entry_counts
+                                .contains_key(conversation)
+                                || metadata
+                                    .conversation_counts
+                                    .contains_key(conversation)
+                        })
+            })
+            .map(|(path, _)| path.clone())
             .collect();
 
-        for (path, source) in &missing {
-            indexer.delete_artifact(*source, path)?;
-            self.metadata
+        for conversation in incoming.keys() {
+            indexer.delete_conversation(
+                source,
+                conversation
+                    .split_once('\0')
+                    .map_or(conversation, |(_, id)| id),
+            )?;
+        }
+        for path in affected {
+            let mut remove_artifact = false;
+            if let Some(metadata) = self
+                .metadata
                 .indexed_files
-                .remove(path);
-            debug!("Removed missing source artifact: {}", path.display());
+                .get_mut(&path)
+            {
+                let legacy_counts_only = metadata
+                    .conversation_entry_counts
+                    .is_empty()
+                    && incoming
+                        .keys()
+                        .any(|conversation| {
+                            metadata
+                                .conversation_counts
+                                .contains_key(conversation)
+                        });
+                if legacy_counts_only {
+                    // Older metadata cannot tell how many non-display records
+                    // belong to each session. Removing this superseded artifact
+                    // avoids double-counted turns/entries after a move. Native
+                    // Claude Code and Codex artifacts contain one conversation,
+                    // so dropping the whole legacy artifact is safe for their
+                    // normal layout; a legacy multi-conversation artifact may
+                    // temporarily under-report unaffected sessions until it is
+                    // re-indexed.
+                    remove_artifact = true;
+                }
+                for conversation in incoming.keys() {
+                    if let Some(count) = metadata
+                        .conversation_entry_counts
+                        .remove(conversation)
+                    {
+                        metadata.entry_count = metadata
+                            .entry_count
+                            .saturating_sub(count);
+                        metadata
+                            .conversation_counts
+                            .remove(conversation);
+                    }
+                }
+                remove_artifact |= metadata.entry_count == 0;
+            }
+            if remove_artifact {
+                self.metadata
+                    .indexed_files
+                    .remove(&path);
+            }
         }
-
-        if !missing.is_empty() {
-            indexer.commit()?;
-            self.refresh_derived_metadata();
-            self.save_metadata()?;
-        }
-        Ok(missing.len())
+        Ok(())
     }
 
     fn refresh_derived_metadata(&mut self) {
@@ -342,6 +468,30 @@ impl CacheManager {
         )
     }
 
+    /// Native client artifacts missing from disk that would be lost by a
+    /// destructive cache rebuild. Managed Claude web imports have their own
+    /// durable storage and are intentionally excluded.
+    pub fn missing_native_artifact_count(&self) -> usize {
+        self.metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, metadata)| metadata.source != Source::ClaudeWeb && !path.exists())
+            .count()
+    }
+
+    /// Native artifacts that a rebuild cannot restore from the current
+    /// discovery scope, whether absent on disk or simply no longer discoverable.
+    pub fn at_risk_native_artifact_count(&self, discovered: &[PathBuf]) -> usize {
+        self.metadata
+            .indexed_files
+            .iter()
+            .filter(|(path, metadata)| {
+                metadata.source != Source::ClaudeWeb
+                    && (!path.exists() || !discovered.contains(path))
+            })
+            .count()
+    }
+
     /// Get cached session interaction counts
     pub fn get_session_counts(&self) -> &HashMap<String, usize> {
         &self
@@ -369,7 +519,14 @@ impl CacheManager {
     fn save_metadata(&self) -> Result<()> {
         fs::create_dir_all(&self.cache_dir)?;
         let content = serde_json::to_string_pretty(&self.metadata)?;
-        fs::write(&self.metadata_file, content)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.cache_dir)?;
+        temporary.write_all(content.as_bytes())?;
+        temporary
+            .as_file()
+            .sync_all()?;
+        temporary
+            .persist(&self.metadata_file)
+            .map_err(|error| error.error)?;
         Ok(())
     }
 
@@ -593,5 +750,355 @@ impl std::fmt::Display for IndexHealth {
         )?;
         writeln!(f, "Status: {:?}", self.status)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::{ConversationEntry, MessageType, SearchEngine, SearchIndexer, Source};
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    #[test]
+    fn automatic_indexing_retains_a_conversation_after_its_source_disappears() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-retained.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &artifact,
+        )
+        .unwrap();
+
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        assert_eq!(
+            cache
+                .get_basic_stats()
+                .0,
+            1
+        );
+
+        std::fs::remove_file(&artifact).unwrap();
+        // A source can disappear after discovery but before parsing. The
+        // incremental boundary must retain its committed search document and
+        // cache metadata in that race too.
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_basic_stats()
+                .0,
+            1
+        );
+    }
+
+    #[test]
+    fn undiscovered_claude_and_codex_artifacts_are_at_risk_of_rebuild() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+
+        for source in [Source::Claude, Source::Codex] {
+            let session_id = format!("{source}-retained");
+            let artifact = temporary
+                .path()
+                .join(format!("{source}-missing.jsonl"));
+            std::fs::write(&artifact, "retained source outside discovery scope").unwrap();
+            indexer
+                .index_conversations(vec![ConversationEntry {
+                    source,
+                    uuid: format!("{source}-message"),
+                    parent_uuid: None,
+                    session_id: session_id.clone(),
+                    source_artifact: artifact.clone(),
+                    project_path: "retention-test".to_string(),
+                    timestamp: Utc::now(),
+                    message_type: MessageType::User,
+                    record_kind: Default::default(),
+                    content: format!("{source} durable searchable history"),
+                    model: None,
+                    cwd: None,
+                    sequence_num: 0,
+                    is_sidechain: false,
+                    agent_id: None,
+                    technologies: Vec::new(),
+                    has_code: false,
+                    code_languages: Vec::new(),
+                    has_error: false,
+                    tools_mentioned: Vec::new(),
+                }])
+                .unwrap();
+            cache
+                .metadata
+                .indexed_files
+                .insert(
+                    artifact,
+                    FileMetadata {
+                        size_hex: "0".to_string(),
+                        size: 0,
+                        modified: Utc::now(),
+                        indexed_at: Utc::now(),
+                        entry_count: 1,
+                        source,
+                        parser_version: parser_version(source),
+                        conversation_counts: HashMap::from([(
+                            source.conversation_key(&session_id),
+                            1,
+                        )]),
+                        conversation_entry_counts: HashMap::from([(
+                            source.conversation_key(&session_id),
+                            1,
+                        )]),
+                    },
+                );
+        }
+        indexer
+            .commit()
+            .unwrap();
+        cache.refresh_derived_metadata();
+        cache
+            .save_metadata()
+            .unwrap();
+
+        assert_eq!(cache.missing_native_artifact_count(), 0);
+        assert_eq!(cache.at_risk_native_artifact_count(&[]), 2);
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        for source in [Source::Claude, Source::Codex] {
+            assert_eq!(
+                engine
+                    .get_conversation_messages(source, &format!("{source}-retained"))
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn moved_artifact_supersedes_source_qualified_conversations() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let original = temporary
+            .path()
+            .join("conversation-original.claude-web.json");
+        let moved = temporary
+            .path()
+            .join("conversation-moved.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &original,
+        )
+        .unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![original.clone()])
+            .unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![moved])
+            .unwrap();
+
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .get_session_counts()
+                .get(&Source::ClaudeWeb.conversation_key("conversation-a")),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn legacy_metadata_is_removed_when_a_moved_artifact_supersedes_it() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let original = temporary
+            .path()
+            .join("conversation-legacy.claude-web.json");
+        let moved = temporary
+            .path()
+            .join("conversation-legacy-moved.claude-web.json");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/claude_export/conversations.json"),
+            &original,
+        )
+        .unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![original.clone()])
+            .unwrap();
+        cache
+            .metadata
+            .indexed_files
+            .get_mut(&original)
+            .unwrap()
+            .conversation_entry_counts
+            .clear();
+        std::fs::rename(&original, &moved).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![moved])
+            .unwrap();
+
+        assert!(
+            !cache
+                .metadata
+                .indexed_files
+                .contains_key(&original)
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            3
+        );
+        assert_eq!(
+            cache
+                .get_session_counts()
+                .get(&Source::ClaudeWeb.conversation_key("conversation-a")),
+            Some(&2)
+        );
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "conversation-a")
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn malformed_metadata_is_an_actionable_error() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache-metadata.json"), "not json").unwrap();
+        let error = CacheManager::new(&cache_dir)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("Refusing to discard retention information"));
+    }
+
+    #[test]
+    fn destructive_reset_recovers_from_malformed_metadata() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache-metadata.json"), "not json").unwrap();
+
+        let mut cache = CacheManager::new_for_destructive_reset(&cache_dir).unwrap();
+        assert_eq!(cache.get_basic_stats(), (0, 0, None));
+        cache
+            .clear_cache()
+            .unwrap();
+
+        let recovered = CacheManager::new(&cache_dir).unwrap();
+        assert_eq!(recovered.get_basic_stats(), (0, 0, None));
+    }
+
+    #[test]
+    fn forced_import_refreshes_same_size_same_second_artifact() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-refresh.claude-web.json");
+        let initial = r#"{"uuid":"same","name":"Same","chat_messages":[{"uuid":"m","text":"alpha","sender":"human","created_at":"2026-01-01T00:00:00Z"}]}"#;
+        let replacement = initial.replace("alpha", "bravo");
+        assert_eq!(initial.len(), replacement.len());
+        std::fs::write(&artifact, initial).unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        std::fs::write(&artifact, replacement).unwrap();
+        cache
+            .update_incremental_forced(&mut indexer, vec![artifact])
+            .unwrap();
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            engine
+                .get_conversation_messages(Source::ClaudeWeb, "same")
+                .unwrap()[0]
+                .content,
+            "bravo"
+        );
     }
 }

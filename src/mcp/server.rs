@@ -279,8 +279,8 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
-                            "description": "Filter by conversation source client (claude or codex)",
+                            "enum": ["claude", "claude-web", "codex"],
+                            "description": "Filter by conversation source client",
                             "optional": true
                         },
                         "project": {
@@ -404,7 +404,8 @@ impl McpServer {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "full": { "type": "boolean", "description": "Force full rebuild (default: incremental)", "optional": true }
+                        "full": { "type": "boolean", "description": "Force full rebuild (default: incremental)", "optional": true },
+                        "allow_history_loss": { "type": "boolean", "description": "Required to discard retained records whose native source artifacts are missing", "optional": true }
                     }
                 }),
             },
@@ -420,7 +421,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for an otherwise ambiguous session ID",
                             "optional": true
                         },
@@ -485,7 +486,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for an otherwise ambiguous session ID",
                             "optional": true
                         }
@@ -506,7 +507,7 @@ impl McpServer {
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["claude", "codex"],
+                            "enum": ["claude", "claude-web", "codex"],
                             "description": "Source for otherwise ambiguous message IDs",
                             "optional": true
                         },
@@ -974,8 +975,12 @@ impl McpServer {
             self.ensure_artifact_fresh(&artifact_path)?;
 
             // Read the source artifact directly for full-fidelity content.
-            let entries =
-                crate::shared::conversation_source(artifact_source).parse(&artifact_path, true)?;
+            let entries = crate::shared::read_conversation(
+                artifact_source,
+                &artifact_path,
+                session_id,
+                true,
+            )?;
             return self.format_session_entries(entries, session_id, &args);
         };
 
@@ -1503,9 +1508,24 @@ Task(
             .get("full")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let allow_history_loss = args
+            .get("allow_history_loss")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
+            let existing_cache = if allow_history_loss {
+                crate::shared::CacheManager::new_for_destructive_reset(&self.cache_dir)?
+            } else {
+                crate::shared::CacheManager::new(&self.cache_dir)?
+            };
+            let missing = existing_cache.at_risk_native_artifact_count(&all_files);
+            if missing > 0 && !allow_history_loss {
+                anyhow::bail!(
+                    "Refusing full rebuild: {missing} indexed native source artifact(s) are missing and their retained history would be permanently lost. Retry with allow_history_loss=true to acknowledge this."
+                );
+            }
             // Full rebuild - clear and recreate
             if self
                 .cache_dir
@@ -1515,7 +1535,6 @@ Task(
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()
@@ -1527,7 +1546,6 @@ Task(
             let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
             let (stale, new) = cache.quick_health_check(&all_files);
-            cache.remove_missing_files(&mut indexer, &all_files)?;
             cache.update_incremental(&mut indexer, all_files)?;
             let counts = cache
                 .get_session_counts()

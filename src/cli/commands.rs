@@ -6,12 +6,17 @@ use clap::{Subcommand, ValueEnum};
 use regex::Regex;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Subcommand)]
 pub enum CliCommands {
+    /// Import a one-off conversation archive into agent-recall managed storage
+    Import {
+        #[command(subcommand)]
+        source: ImportSource,
+    },
     /// Index management
     Index {
         #[command(subcommand)]
@@ -21,7 +26,7 @@ pub enum CliCommands {
     Search {
         /// Search query
         query: String,
-        /// Filter by source client (claude or codex)
+        /// Filter by source client (claude, claude-web, or codex)
         #[arg(long)]
         source: Option<String>,
         /// Filter by project
@@ -150,6 +155,15 @@ pub enum CliCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ImportSource {
+    /// Import a downloaded Claude web/desktop `conversations.json` export
+    ClaudeWeb {
+        /// Path to the downloaded `conversations.json` file
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum CacheAction {
     /// Show cache statistics
     Info,
@@ -229,9 +243,17 @@ pub enum IndexAction {
     #[default]
     Status,
     /// Force full rebuild of the index
-    Rebuild,
+    Rebuild {
+        /// Acknowledge that deleted native source artifacts cannot be restored
+        #[arg(long)]
+        allow_history_loss: bool,
+    },
     /// Clean up deleted entries from index
-    Vacuum,
+    Vacuum {
+        /// Acknowledge that deleted native source artifacts cannot be restored
+        #[arg(long)]
+        allow_history_loss: bool,
+    },
 }
 
 pub fn setup_logging(verbose: u8) {
@@ -254,13 +276,28 @@ pub fn run_cli(verbose: u8, command: CliCommands) -> Result<()> {
     setup_logging(verbose);
 
     match command {
+        CliCommands::Import { source } => match source {
+            ImportSource::ClaudeWeb { path } => {
+                let imported = shared::import_claude_web_export(&path)?;
+                let index_path = shared::get_config().get_cache_dir()?;
+                shared::index_now_forced(&index_path, imported.clone())?;
+                println!(
+                    "Imported {} Claude web conversations into managed storage and indexed them.",
+                    imported.len()
+                );
+            }
+        },
         CliCommands::Index { action } => {
             let config = shared::get_config();
             let index_path = config.get_cache_dir()?;
             match action.unwrap_or_default() {
                 IndexAction::Status => index::show_status(&index_path)?,
-                IndexAction::Rebuild => index::rebuild(&index_path)?,
-                IndexAction::Vacuum => index::vacuum(&index_path)?,
+                IndexAction::Rebuild { allow_history_loss } => {
+                    index::rebuild(&index_path, allow_history_loss)?
+                }
+                IndexAction::Vacuum { allow_history_loss } => {
+                    index::vacuum(&index_path, allow_history_loss)?
+                }
             }
         }
         CliCommands::Completions { .. } => unreachable!("Completions handled in main"),
@@ -643,9 +680,11 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 }
 
 fn clear_cache(index_path: &Path) -> Result<()> {
-    let mut cache_manager = CacheManager::new(index_path)?;
+    let mut cache_manager = CacheManager::new_for_destructive_reset(index_path)?;
     cache_manager.clear_cache()?;
-    println!("Cache cleared successfully. Run 'agent-recall index' to rebuild.");
+    println!(
+        "Cache cleared. Retained indexed history was permanently discarded; run 'agent-recall index' to rebuild from available sources."
+    );
     Ok(())
 }
 
@@ -1116,7 +1155,7 @@ fn view_session(
                 .source_artifact
                 .exists()
         {
-            shared::conversation_source(first.source).parse(&first.source_artifact, true)?
+            shared::read_conversation(first.source, &first.source_artifact, &session_id, true)?
         } else {
             eprintln!(
                 "Warning: source artifact not found, falling back to index (content may be truncated)"

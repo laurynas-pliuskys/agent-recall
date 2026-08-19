@@ -123,6 +123,9 @@ pub fn codex_sessions_dirs() -> Vec<PathBuf> {
 
 /// Identify the adapter responsible for a discovered transcript path.
 pub fn source_for_jsonl_path(path: &Path) -> Option<Source> {
+    if super::claude_web_import::is_managed_export_artifact(path) {
+        return Some(Source::ClaudeWeb);
+    }
     if projects_dir().is_ok_and(|projects| path.starts_with(projects)) {
         return Some(Source::Claude);
     }
@@ -135,7 +138,7 @@ pub fn source_for_jsonl_path(path: &Path) -> Option<Source> {
     None
 }
 
-/// Discover all JSONL session files under both `.claude/projects/` and `.codex/sessions/`.
+/// Discover all managed and live conversation artifacts.
 pub fn discover_jsonl_files() -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 

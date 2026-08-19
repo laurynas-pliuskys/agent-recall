@@ -65,31 +65,36 @@ pub fn show_status(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn rebuild(index_path: &Path) -> Result<()> {
+pub fn rebuild(index_path: &Path, allow_history_loss: bool) -> Result<()> {
     info!("Starting index rebuild...");
 
     // Acquire exclusive lock
     let _lock = ExclusiveIndexAccess::acquire()?;
 
-    let mut cache_manager = CacheManager::new(index_path)?;
+    let mut cache_manager = if allow_history_loss {
+        CacheManager::new_for_destructive_reset(index_path)?
+    } else {
+        CacheManager::new(index_path)?
+    };
+    let all_files = discover_jsonl_files()?;
+    let missing = cache_manager.at_risk_native_artifact_count(&all_files);
+    if missing > 0 && !allow_history_loss {
+        anyhow::bail!(
+            "Refusing rebuild: {missing} indexed native source artifact(s) are missing and their retained history would be permanently lost. Re-run with `--allow-history-loss` to acknowledge this."
+        );
+    }
     cache_manager.clear_cache()?;
 
     let mut indexer = SearchIndexer::new(index_path)?;
-    let all_files = discover_jsonl_files()?;
-
     info!("Found {} files to process", all_files.len());
-    cache_manager.remove_missing_files(&mut indexer, &all_files)?;
     cache_manager.update_incremental(&mut indexer, all_files)?;
 
     println!("Index rebuild completed successfully.");
     Ok(())
 }
 
-pub fn vacuum(index_path: &Path) -> Result<()> {
+pub fn vacuum(index_path: &Path, allow_history_loss: bool) -> Result<()> {
     info!("Starting index vacuum operation...");
-
-    // Acquire exclusive lock
-    let _lock = ExclusiveIndexAccess::acquire()?;
 
     if !index_path.exists() {
         println!("No index found to vacuum.");
@@ -100,7 +105,7 @@ pub fn vacuum(index_path: &Path) -> Result<()> {
     // built-in vacuum. In the future, we could implement a more sophisticated
     // approach that only removes deleted entries.
     println!("Vacuuming index by rebuilding...");
-    rebuild(index_path)?;
+    rebuild(index_path, allow_history_loss)?;
 
     println!("Index vacuum completed.");
     Ok(())

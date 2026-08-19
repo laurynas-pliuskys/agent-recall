@@ -12,6 +12,8 @@ use anyhow::Result;
 pub enum Source {
     #[default]
     Claude,
+    #[serde(rename = "claude-web", alias = "claudeweb")]
+    ClaudeWeb,
     Codex,
 }
 
@@ -19,6 +21,7 @@ impl Source {
     pub fn as_str(&self) -> &'static str {
         match self {
             Source::Claude => "claude",
+            Source::ClaudeWeb => "claude-web",
             Source::Codex => "codex",
         }
     }
@@ -26,6 +29,7 @@ impl Source {
     pub fn display_name(&self) -> &'static str {
         match self {
             Source::Claude => "Claude Code",
+            Source::ClaudeWeb => "Claude web export",
             Source::Codex => "Codex",
         }
     }
@@ -33,6 +37,7 @@ impl Source {
     pub fn resume_hint(&self, session_id: &str) -> String {
         match self {
             Source::Claude => format!("claude --resume {}", session_id),
+            Source::ClaudeWeb => "Claude web export (no native resume command)".to_string(),
             Source::Codex => format!("codex resume {}", session_id),
         }
     }
@@ -74,6 +79,7 @@ pub trait ConversationSource: Sync {
 }
 
 struct ClaudeSource;
+struct ClaudeWebSource;
 struct CodexSource;
 
 impl ConversationSource for ClaudeSource {
@@ -96,6 +102,26 @@ impl ConversationSource for ClaudeSource {
             super::parser::JsonlParser::default()
         };
         parser.parse_file(path)
+    }
+}
+
+impl ConversationSource for ClaudeWebSource {
+    fn source(&self) -> Source {
+        Source::ClaudeWeb
+    }
+
+    fn parser_version(&self) -> u32 {
+        // v3 parses durable per-conversation imports and preserves rich export
+        // text/attachment labels instead of dropping empty `text` messages.
+        3
+    }
+
+    fn discover(&self) -> Result<Vec<PathBuf>> {
+        super::claude_web_import::discover_managed_exports()
+    }
+
+    fn parse(&self, path: &Path, _full_content: bool) -> Result<Vec<ConversationEntry>> {
+        super::claude_export_parser::ClaudeExportParser::new().parse_file(path)
     }
 }
 
@@ -133,17 +159,35 @@ impl ConversationSource for CodexSource {
 }
 
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
+static CLAUDE_WEB_SOURCE: ClaudeWebSource = ClaudeWebSource;
 static CODEX_SOURCE: CodexSource = CodexSource;
 
 pub fn conversation_source(source: Source) -> &'static dyn ConversationSource {
     match source {
         Source::Claude => &CLAUDE_SOURCE,
+        Source::ClaudeWeb => &CLAUDE_WEB_SOURCE,
         Source::Codex => &CODEX_SOURCE,
     }
 }
 
-pub fn conversation_sources() -> [&'static dyn ConversationSource; 2] {
-    [&CLAUDE_SOURCE, &CODEX_SOURCE]
+pub fn conversation_sources() -> [&'static dyn ConversationSource; 3] {
+    [&CLAUDE_SOURCE, &CLAUDE_WEB_SOURCE, &CODEX_SOURCE]
+}
+
+/// Read one source-qualified conversation from its source artifact. This
+/// filter is required for legacy shared archives and is a no-op for managed
+/// Claude web imports, which use one artifact per conversation.
+pub fn read_conversation(
+    source: Source,
+    artifact: &Path,
+    session_id: &str,
+    full_content: bool,
+) -> Result<Vec<ConversationEntry>> {
+    Ok(conversation_source(source)
+        .parse(artifact, full_content)?
+        .into_iter()
+        .filter(|entry| entry.session_id == session_id)
+        .collect())
 }
 
 impl fmt::Display for Source {
@@ -161,9 +205,10 @@ impl FromStr for Source {
             .trim()
         {
             "claude" => Ok(Source::Claude),
+            "claude-web" => Ok(Source::ClaudeWeb),
             "codex" => Ok(Source::Codex),
             other => Err(format!(
-                "Unknown source: '{}'. Expected 'claude' or 'codex'.",
+                "Unknown source: '{}'. Expected 'claude', 'claude-web', or 'codex'.",
                 other
             )),
         }
@@ -177,10 +222,20 @@ mod tests {
     #[test]
     fn test_source_strings_and_parsing() {
         assert_eq!(Source::Claude.as_str(), "claude");
+        assert_eq!(Source::ClaudeWeb.as_str(), "claude-web");
         assert_eq!(Source::Codex.as_str(), "codex");
 
         assert_eq!("claude".parse::<Source>(), Ok(Source::Claude));
+        assert_eq!("claude-web".parse::<Source>(), Ok(Source::ClaudeWeb));
         assert_eq!("Codex".parse::<Source>(), Ok(Source::Codex));
+        assert_eq!(
+            serde_json::to_string(&Source::ClaudeWeb).unwrap(),
+            "\"claude-web\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Source>("\"claudeweb\"").unwrap(),
+            Source::ClaudeWeb
+        );
         assert!(
             "unknown"
                 .parse::<Source>()
@@ -193,6 +248,10 @@ mod tests {
         assert_eq!(
             Source::Claude.resume_hint("abc-123"),
             "claude --resume abc-123"
+        );
+        assert_eq!(
+            Source::ClaudeWeb.resume_hint("abc-123"),
+            "Claude web export (no native resume command)"
         );
         assert_eq!(Source::Codex.resume_hint("xyz-789"), "codex resume xyz-789");
     }

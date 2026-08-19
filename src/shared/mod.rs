@@ -1,4 +1,6 @@
 pub mod cache;
+pub mod claude_export_parser;
+pub mod claude_web_import;
 pub mod codex_parser;
 pub mod config;
 pub mod indexer;
@@ -14,6 +16,7 @@ pub mod terminal;
 pub mod utils;
 
 pub use cache::*;
+pub use claude_web_import::*;
 pub use codex_parser::*;
 pub use config::*;
 pub use indexer::*;
