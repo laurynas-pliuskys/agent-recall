@@ -148,17 +148,21 @@ pub fn import_export_file(input: &Path, destination: &Path) -> Result<Vec<PathBu
     let mut staged = Vec::with_capacity(raw_conversations.len());
 
     for raw in raw_conversations {
-        let uuid = raw
-            .get("uuid")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("Claude export conversation has no string uuid"))?;
-        if uuid
+        // Validate every conversation before creating the managed directory or
+        // writing any artifacts. Deserializing by reference avoids cloning the
+        // complete JSON tree while preserving the parser's structural checks.
+        let conversation = ExportConversation::deserialize(&raw)?;
+        if conversation
+            .uuid
             .trim()
             .is_empty()
         {
             anyhow::bail!("Claude export conversation has an empty uuid");
         }
-        let filename = format!("conversation-{}.claude-web.json", safe_file_component(uuid));
+        let filename = format!(
+            "conversation-{}.claude-web.json",
+            safe_file_component(&conversation.uuid)
+        );
         staged.push((filename, serde_json::to_vec_pretty(&raw)?));
     }
 
@@ -333,6 +337,7 @@ fn extract_attachment_labels(kind: &str, value: &Value, parts: &mut Vec<String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn parses_each_conversation_with_native_ids_and_titles() {
@@ -393,5 +398,28 @@ mod tests {
                 .iter()
                 .all(|entry| entry.session_id == "conversation-b")
         );
+    }
+
+    #[test]
+    fn import_rejects_malformed_conversations_before_writing_artifacts() {
+        let temporary = TempDir::new().unwrap();
+        let source = temporary
+            .path()
+            .join("export.json");
+        let managed = temporary
+            .path()
+            .join("managed");
+        std::fs::write(
+            &source,
+            r#"[{"uuid":"valid-conv","chat_messages":[]},{"uuid":"bad-conv","chat_messages":"not-an-array"}]"#,
+        )
+        .unwrap();
+
+        let error = import_export_file(&source, &managed)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("expected a sequence"));
+        assert!(!managed.exists());
     }
 }
