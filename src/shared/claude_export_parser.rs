@@ -148,18 +148,17 @@ pub fn import_export_file(input: &Path, destination: &Path) -> Result<Vec<PathBu
     let mut staged = Vec::with_capacity(raw_conversations.len());
 
     for raw in raw_conversations {
-        let conversation: ExportConversation = serde_json::from_value(raw.clone())?;
-        if conversation
-            .uuid
+        let uuid = raw
+            .get("uuid")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Claude export conversation has no string uuid"))?;
+        if uuid
             .trim()
             .is_empty()
         {
             anyhow::bail!("Claude export conversation has an empty uuid");
         }
-        let filename = format!(
-            "conversation-{}.claude-web.json",
-            safe_file_component(&conversation.uuid)
-        );
+        let filename = format!("conversation-{}.claude-web.json", safe_file_component(uuid));
         staged.push((filename, serde_json::to_vec_pretty(&raw)?));
     }
 

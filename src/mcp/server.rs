@@ -1515,7 +1515,11 @@ Task(
         let all_files = discover_jsonl_files()?;
 
         let result = if full_rebuild {
-            let existing_cache = crate::shared::CacheManager::new(&self.cache_dir)?;
+            let existing_cache = if allow_history_loss {
+                crate::shared::CacheManager::new_for_destructive_reset(&self.cache_dir)?
+            } else {
+                crate::shared::CacheManager::new(&self.cache_dir)?
+            };
             let missing = existing_cache.at_risk_native_artifact_count(&all_files);
             if missing > 0 && !allow_history_loss {
                 anyhow::bail!(

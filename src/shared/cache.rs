@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -54,16 +55,42 @@ pub struct CacheManager {
 
 impl CacheManager {
     pub fn new(cache_dir: &Path) -> Result<Self> {
+        Self::load(cache_dir, false)
+    }
+
+    /// Open cache metadata for an explicitly destructive reset.
+    ///
+    /// Ordinary reads must preserve the strict failure mode so corrupt
+    /// retention metadata can never be discarded implicitly. `cache clear`
+    /// and history-loss-acknowledged rebuilds may use this escape hatch
+    /// because the caller has already requested that retained history be
+    /// destroyed.
+    pub fn new_for_destructive_reset(cache_dir: &Path) -> Result<Self> {
+        Self::load(cache_dir, true)
+    }
+
+    fn load(cache_dir: &Path, discard_invalid_metadata: bool) -> Result<Self> {
         let metadata_file = cache_dir.join("cache-metadata.json");
 
         let metadata = if metadata_file.exists() {
             let content = fs::read_to_string(&metadata_file)?;
-            serde_json::from_str(&content).map_err(|error| {
-                anyhow::anyhow!(
-                    "Could not parse cache metadata {}: {error}. Refusing to discard retention information; repair it or explicitly remove the cache.",
-                    metadata_file.display()
-                )
-            })?
+            match serde_json::from_str(&content) {
+                Ok(metadata) => metadata,
+                Err(error) if discard_invalid_metadata => {
+                    warn!(
+                        "Discarding invalid cache metadata {} during an explicitly destructive reset: {}",
+                        metadata_file.display(),
+                        error
+                    );
+                    CacheMetadata::default()
+                }
+                Err(error) => {
+                    anyhow::bail!(
+                        "Could not parse cache metadata {}: {error}. Refusing to discard retention information; run `agent-recall cache clear` or `agent-recall index rebuild --allow-history-loss` to reset it deliberately.",
+                        metadata_file.display()
+                    );
+                }
+            }
         } else {
             CacheMetadata::default()
         };
@@ -355,7 +382,12 @@ impl CacheManager {
                 if legacy_counts_only {
                     // Older metadata cannot tell how many non-display records
                     // belong to each session. Removing this superseded artifact
-                    // avoids double-counted turns/entries after a move.
+                    // avoids double-counted turns/entries after a move. Native
+                    // Claude Code and Codex artifacts contain one conversation,
+                    // so dropping the whole legacy artifact is safe for their
+                    // normal layout; a legacy multi-conversation artifact may
+                    // temporarily under-report unaffected sessions until it is
+                    // re-indexed.
                     remove_artifact = true;
                 }
                 for conversation in incoming.keys() {
@@ -487,7 +519,14 @@ impl CacheManager {
     fn save_metadata(&self) -> Result<()> {
         fs::create_dir_all(&self.cache_dir)?;
         let content = serde_json::to_string_pretty(&self.metadata)?;
-        fs::write(&self.metadata_file, content)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(&self.cache_dir)?;
+        temporary.write_all(content.as_bytes())?;
+        temporary
+            .as_file()
+            .sync_all()?;
+        temporary
+            .persist(&self.metadata_file)
+            .map_err(|error| error.error)?;
         Ok(())
     }
 
@@ -1004,6 +1043,25 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("Refusing to discard retention information"));
+    }
+
+    #[test]
+    fn destructive_reset_recovers_from_malformed_metadata() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("cache-metadata.json"), "not json").unwrap();
+
+        let mut cache = CacheManager::new_for_destructive_reset(&cache_dir).unwrap();
+        assert_eq!(cache.get_basic_stats(), (0, 0, None));
+        cache
+            .clear_cache()
+            .unwrap();
+
+        let recovered = CacheManager::new(&cache_dir).unwrap();
+        assert_eq!(recovered.get_basic_stats(), (0, 0, None));
     }
 
     #[test]

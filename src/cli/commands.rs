@@ -680,7 +680,7 @@ fn show_cache_info(index_path: &Path) -> Result<()> {
 }
 
 fn clear_cache(index_path: &Path) -> Result<()> {
-    let mut cache_manager = CacheManager::new(index_path)?;
+    let mut cache_manager = CacheManager::new_for_destructive_reset(index_path)?;
     cache_manager.clear_cache()?;
     println!(
         "Cache cleared. Retained indexed history was permanently discarded; run 'agent-recall index' to rebuild from available sources."
