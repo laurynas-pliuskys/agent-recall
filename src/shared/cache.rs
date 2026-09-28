@@ -684,10 +684,15 @@ impl CacheManager {
     pub fn quick_health_check(&self, all_jsonl_files: &[PathBuf]) -> (usize, usize) {
         let mut stale = 0;
         let mut new_files = 0;
-        for (path, meta) in &self
-            .metadata
-            .indexed_files
-        {
+        for path in all_jsonl_files {
+            let Some(meta) = self
+                .metadata
+                .indexed_files
+                .get(path)
+            else {
+                new_files += 1;
+                continue;
+            };
             if let Ok(current_mtime) = file_mtime(path) {
                 let current_size = fs::metadata(path)
                     .map(|m| m.len())
@@ -698,15 +703,6 @@ impl CacheManager {
                 {
                     stale += 1;
                 }
-            }
-        }
-        for path in all_jsonl_files {
-            if !self
-                .metadata
-                .indexed_files
-                .contains_key(path)
-            {
-                new_files += 1;
             }
         }
         (stale, new_files)
@@ -883,6 +879,27 @@ mod tests {
             .unwrap();
         assert_eq!(second.candidates, 0);
         assert_eq!(second.unchanged_artifacts, 1);
+    }
+
+    #[test]
+    fn retained_artifact_outside_discovery_does_not_report_stale() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-retained.claude-web.json");
+        write_web_artifact(&artifact, &[("message", "Original text")]);
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+
+        write_web_artifact(&artifact, &[("message", "Changed text is longer")]);
+        assert_eq!(cache.quick_health_check(&[]), (0, 0));
+        assert_eq!(cache.quick_health_check(&[artifact]), (1, 0));
     }
 
     #[test]
