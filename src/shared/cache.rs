@@ -866,7 +866,10 @@ mod tests {
             .unwrap();
         assert_eq!(first.candidates, 1);
         assert_eq!(first.empty_artifacts, 1);
-        assert_eq!(cache.quick_health_check(&[artifact.clone()]), (0, 0));
+        assert_eq!(
+            cache.quick_health_check(std::slice::from_ref(&artifact)),
+            (0, 0)
+        );
         assert_eq!(
             cache
                 .metadata
