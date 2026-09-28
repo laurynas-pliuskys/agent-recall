@@ -5,7 +5,7 @@ use super::terminal::file_hyperlink;
 use super::utils::truncate_content;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
@@ -199,51 +199,72 @@ impl SearchEngine {
                 .1
         };
 
-        let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(query.limit))?;
-
-        let mut results = Vec::new();
-        for (score, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
-
-            // Apply source filter
-            if let Some(ref source_filter) = query.source_filter
-                && result.source != *source_filter
-            {
-                continue;
+        let mut fetch_limit = query
+            .limit
+            .min(searcher.num_docs() as usize);
+        loop {
+            if fetch_limit == 0 {
+                return Ok(Vec::new());
             }
+            let top_docs = searcher.search(&*final_query, &TopDocs::with_limit(fetch_limit))?;
+            let fetched = top_docs.len();
+            let mut results = Vec::new();
+            let mut seen = HashSet::new();
+            for (score, doc_address) in top_docs {
+                let result = self.doc_to_result(&searcher.doc(doc_address)?, score, &query.text)?;
 
-            // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
-            if let Some(ref session_filter) = query.session_filter
-                && !result
-                    .session_id
-                    .starts_with(session_filter.as_str())
-            {
-                continue;
-            }
+                // Apply source filter
+                if let Some(ref source_filter) = query.source_filter
+                    && result.source != *source_filter
+                {
+                    continue;
+                }
 
-            // Apply project post-filter (Tantivy matches segments, verify full project name)
-            if let Some(ref project_filter) = query.project_filter
-                && !project_matches(&result.project_path, project_filter)
-            {
-                continue;
-            }
+                // Apply session prefix filter (Tantivy matches segments, but we need prefix precision)
+                if let Some(ref session_filter) = query.session_filter
+                    && !result
+                        .session_id
+                        .starts_with(session_filter.as_str())
+                {
+                    continue;
+                }
 
-            // Apply date range filters
-            if let Some(after) = query.after
-                && result.timestamp < after
-            {
-                continue;
-            }
-            if let Some(before) = query.before
-                && result.timestamp > before
-            {
-                continue;
-            }
+                // Apply project post-filter (Tantivy matches segments, verify full project name)
+                if let Some(ref project_filter) = query.project_filter
+                    && !project_matches(&result.project_path, project_filter)
+                {
+                    continue;
+                }
 
-            results.push(result);
+                // Apply date range filters
+                if let Some(after) = query.after
+                    && result.timestamp < after
+                {
+                    continue;
+                }
+                if let Some(before) = query.before
+                    && result.timestamp > before
+                {
+                    continue;
+                }
+
+                let key = result
+                    .source
+                    .doc_key(&result.session_id, &result.uuid);
+                if seen.insert(key) {
+                    results.push(result);
+                }
+                if results.len() == query.limit {
+                    return Ok(results);
+                }
+            }
+            if fetched < fetch_limit || fetch_limit == searcher.num_docs() as usize {
+                return Ok(results);
+            }
+            fetch_limit = fetch_limit
+                .saturating_mul(2)
+                .min(searcher.num_docs() as usize);
         }
-
-        Ok(results)
     }
 
     /// Search with context - returns matches with surrounding messages (grep -C style)
@@ -430,8 +451,16 @@ impl SearchEngine {
         );
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
         let mut results = Vec::with_capacity(top_docs.len());
+        let mut seen = HashSet::new();
         for (score, doc_address) in top_docs {
-            results.push(self.doc_to_result(&searcher.doc(doc_address)?, score, "")?);
+            let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
+            if seen.insert(
+                result
+                    .source
+                    .doc_key(&result.session_id, &result.uuid),
+            ) {
+                results.push(result);
+            }
         }
         results.sort_by_key(|result| result.sequence_num);
         Ok(results)
@@ -478,6 +507,7 @@ impl SearchEngine {
         let top_docs = searcher.search(&query, &TopDocs::with_limit(MAX_SESSION_MESSAGES))?;
 
         let mut results = Vec::new();
+        let mut seen = HashSet::new();
         for (score, doc_address) in top_docs {
             let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
             // Filter to session_id match - support prefix matching for short IDs
@@ -486,6 +516,11 @@ impl SearchEngine {
                     .session_id
                     .starts_with(session_id))
                 && source.is_none_or(|expected| result.source == expected)
+                && seen.insert(
+                    result
+                        .source
+                        .doc_key(&result.session_id, &result.uuid),
+                )
             {
                 results.push(result);
             }
@@ -578,6 +613,7 @@ impl SearchEngine {
             let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
 
             let mut matches = Vec::new();
+            let mut seen = HashSet::new();
             for (score, doc_address) in top_docs {
                 let result = self.doc_to_result(&searcher.doc(doc_address)?, score, "")?;
                 // Exact match or prefix match
@@ -586,7 +622,12 @@ impl SearchEngine {
                         .uuid
                         .starts_with(uuid)
                 {
-                    matches.push(result);
+                    let key = result
+                        .source
+                        .doc_key(&result.session_id, &result.uuid);
+                    if seen.insert(key) {
+                        matches.push(result);
+                    }
                 }
             }
             let sources: std::collections::HashSet<_> = matches
@@ -848,22 +889,41 @@ impl SearchEngine {
             Box::new(tantivy::query::AllQuery)
         };
 
-        let top_docs = searcher.search(&*query, &TopDocs::with_limit(limit))?;
-
-        let mut results = Vec::new();
-        for (_score, doc_address) in top_docs {
-            let result = self.doc_to_result(&searcher.doc(doc_address)?, 1.0, "")?;
-
-            if let Some(ref project_filter) = project_filter
-                && !project_matches(&result.project_path, project_filter)
-            {
-                continue;
+        let mut fetch_limit = limit.min(searcher.num_docs() as usize);
+        loop {
+            if fetch_limit == 0 {
+                return Ok(Vec::new());
             }
+            let top_docs = searcher.search(&*query, &TopDocs::with_limit(fetch_limit))?;
+            let fetched = top_docs.len();
+            let mut results = Vec::new();
+            let mut seen = HashSet::new();
+            for (_score, doc_address) in top_docs {
+                let result = self.doc_to_result(&searcher.doc(doc_address)?, 1.0, "")?;
 
-            results.push(result);
+                if let Some(ref project_filter) = project_filter
+                    && !project_matches(&result.project_path, project_filter)
+                {
+                    continue;
+                }
+
+                let key = result
+                    .source
+                    .doc_key(&result.session_id, &result.uuid);
+                if seen.insert(key) {
+                    results.push(result);
+                }
+                if results.len() == limit {
+                    return Ok(results);
+                }
+            }
+            if fetched < fetch_limit || fetch_limit == searcher.num_docs() as usize {
+                return Ok(results);
+            }
+            fetch_limit = fetch_limit
+                .saturating_mul(2)
+                .min(searcher.num_docs() as usize);
         }
-
-        Ok(results)
     }
 
     /// Aggregate conversation statistics over every live document without
@@ -878,6 +938,7 @@ impl SearchEngine {
             .reader
             .searcher();
         let mut stats = ConversationStats::default();
+        let mut seen = HashSet::new();
 
         for segment in searcher.segment_readers() {
             let fast_fields = segment.fast_fields();
@@ -889,6 +950,9 @@ impl SearchEngine {
                 .ok_or_else(|| {
                     anyhow::anyhow!("conversation_key is not configured as a fast field")
                 })?;
+            let document_keys = fast_fields
+                .str("document_key")?
+                .ok_or_else(|| anyhow::anyhow!("document_key is not configured as a fast field"))?;
             let has_code = fast_fields.bool("has_code")?;
             let has_error = fast_fields.bool("has_error")?;
 
@@ -914,6 +978,19 @@ impl SearchEngine {
                                 .is_none_or(|filter| project_matches(&project_path, filter))
                     });
                 if !matches_project {
+                    continue;
+                }
+
+                let Some(document_ord) = document_keys
+                    .ords()
+                    .first(doc_id)
+                else {
+                    continue;
+                };
+                let mut document_key = String::new();
+                if !document_keys.ord_to_str(document_ord, &mut document_key)?
+                    || !seen.insert(document_key)
+                {
                     continue;
                 }
 

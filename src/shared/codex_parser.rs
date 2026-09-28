@@ -4,6 +4,7 @@ use super::source::Source;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use strip_ansi_escapes::strip_str;
@@ -135,13 +136,22 @@ impl CodexParser {
         }
     }
 
-    fn record_id(payload: &Value, session_id: &str, sequence: usize) -> String {
+    fn record_id(payload: &Value, record: &Value) -> String {
         payload
             .get("id")
-            .or_else(|| payload.get("call_id"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| format!("{session_id}-{sequence}"))
+            .unwrap_or_else(|| {
+                // Sequence numbers restart in each resumed rollout. Hash the
+                // native event (including its timestamp and record type) so
+                // overlapping fragments share an ID but distinct records do not.
+                let digest = Sha256::digest(
+                    record
+                        .to_string()
+                        .as_bytes(),
+                );
+                format!("record-{digest:x}")
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -342,7 +352,7 @@ impl CodexParser {
                         &project_path,
                         timestamp,
                         sequence_counter,
-                        Self::record_id(payload, &session_id, sequence_counter),
+                        Self::record_id(payload, &value),
                         message_type,
                         RecordKind::Conversation,
                         content,
@@ -377,7 +387,7 @@ impl CodexParser {
                         &project_path,
                         timestamp,
                         sequence_counter,
-                        Self::record_id(payload, &session_id, sequence_counter),
+                        Self::record_id(payload, &value),
                         MessageType::Assistant,
                         RecordKind::ToolCall,
                         content,
@@ -411,7 +421,7 @@ impl CodexParser {
                         &project_path,
                         timestamp,
                         sequence_counter,
-                        Self::record_id(payload, &session_id, sequence_counter),
+                        Self::record_id(payload, &value),
                         MessageType::Assistant,
                         RecordKind::ToolResult,
                         format!("[tool_result:{tool_name}]\n{output}"),
@@ -514,5 +524,31 @@ mod tests {
                 .to_string()
                 .contains(":2:")
         );
+    }
+
+    #[test]
+    fn resumed_rollouts_reuse_overlap_ids_without_colliding_on_sequence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let first = temporary
+            .path()
+            .join("first.jsonl");
+        let second = temporary
+            .path()
+            .join("second.jsonl");
+        let session = r#"{"timestamp":"2026-09-28T10:00:00Z","type":"session_meta","payload":{"id":"shared-session","cwd":"/tmp"}}"#;
+        let overlap = r#"{"timestamp":"2026-09-28T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"shared"}]}}"#;
+        let unique = r#"{"timestamp":"2026-09-28T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"unique"}]}}"#;
+        std::fs::write(&first, format!("{session}\n{overlap}\n")).unwrap();
+        std::fs::write(&second, format!("{session}\n{overlap}\n{unique}\n")).unwrap();
+
+        let first_entries = CodexParser::new()
+            .parse_file(&first)
+            .unwrap();
+        let second_entries = CodexParser::new()
+            .parse_file(&second)
+            .unwrap();
+        assert_eq!(first_entries[0].uuid, second_entries[0].uuid);
+        assert_ne!(second_entries[0].uuid, second_entries[1].uuid);
+        assert_eq!(first_entries[0].session_id, second_entries[1].session_id);
     }
 }

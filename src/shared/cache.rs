@@ -6,7 +6,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,23 @@ pub struct FileMetadata {
     /// moved source artifact supersede only its matching conversations.
     #[serde(default)]
     pub conversation_entry_counts: HashMap<String, usize>,
+    /// Stable source-qualified record IDs used to avoid counting overlapping
+    /// rollout fragments twice. Older metadata falls back to stored counts.
+    #[serde(default)]
+    pub primary_record_ids: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub message_ids: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct IndexingOutcome {
+    pub candidates: usize,
+    pub indexed_artifacts: usize,
+    pub indexed_primary_records: usize,
+    pub reference_only_artifacts: usize,
+    pub empty_artifacts: usize,
+    pub parse_failures: usize,
+    pub unchanged_artifacts: usize,
 }
 
 fn parser_version(source: Source) -> u32 {
@@ -129,7 +146,7 @@ impl CacheManager {
         &mut self,
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
-    ) -> Result<()> {
+    ) -> Result<IndexingOutcome> {
         self.update_incremental_with_mode(indexer, files, false)
     }
 
@@ -140,7 +157,7 @@ impl CacheManager {
         &mut self,
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
-    ) -> Result<()> {
+    ) -> Result<IndexingOutcome> {
         self.update_incremental_with_mode(indexer, files, true)
     }
 
@@ -149,7 +166,8 @@ impl CacheManager {
         indexer: &mut SearchIndexer,
         files: Vec<PathBuf>,
         force: bool,
-    ) -> Result<()> {
+    ) -> Result<IndexingOutcome> {
+        let mut outcome = IndexingOutcome::default();
         // Phase 1 (serial): remove deleted files and collect files that need parsing.
         let mut to_parse: Vec<PathBuf> = Vec::new();
         for file_path in files {
@@ -165,14 +183,17 @@ impl CacheManager {
             }
             if !force && !self.needs_indexing(&file_path)? {
                 debug!("Skipping unchanged file: {}", file_path.display());
+                outcome.unchanged_artifacts += 1;
                 continue;
             }
             to_parse.push(file_path);
         }
 
+        outcome.candidates = to_parse.len();
+
         if to_parse.is_empty() {
             info!("No files needed indexing");
-            return Ok(());
+            return Ok(outcome);
         }
 
         // Phase 2 (parallel): parse all files concurrently.
@@ -186,12 +207,22 @@ impl CacheManager {
 
         let parsed: Vec<_> = to_parse
             .into_par_iter()
-            .filter_map(|file_path| {
+            .map(|file_path| {
                 info!("Processing: {}", file_path.display());
-                let file_size = fs::metadata(&file_path)
-                    .ok()?
-                    .len();
-                let file_modified = file_mtime(&file_path).ok()?;
+                let file_size = match fs::metadata(&file_path) {
+                    Ok(metadata) => metadata.len(),
+                    Err(error) => {
+                        warn!("Cannot stat {}: {}", file_path.display(), error);
+                        return None;
+                    }
+                };
+                let file_modified = match file_mtime(&file_path) {
+                    Ok(modified) => modified,
+                    Err(error) => {
+                        warn!("Cannot read mtime of {}: {}", file_path.display(), error);
+                        return None;
+                    }
+                };
                 let source = match super::path_utils::source_for_jsonl_path(&file_path) {
                     Some(source) => source,
                     None => {
@@ -202,13 +233,6 @@ impl CacheManager {
                 let entries_res =
                     super::source::conversation_source(source).parse(&file_path, false);
                 match entries_res {
-                    Ok(entries) if entries.is_empty() => {
-                        warn!(
-                            "{} parsed successfully but yielded no recognized messages; leaving it uncached",
-                            file_path.display()
-                        );
-                        None
-                    }
                     Ok(entries) => Some(ParsedFile {
                         path: file_path,
                         source,
@@ -225,8 +249,14 @@ impl CacheManager {
             .collect();
 
         // Phase 3 (serial): feed into IndexWriter and update cache metadata.
-        let mut files_processed = 0;
-        for parsed_file in parsed {
+        outcome.parse_failures = parsed
+            .iter()
+            .filter(|file| file.is_none())
+            .count();
+        for parsed_file in parsed
+            .into_iter()
+            .flatten()
+        {
             let source_adapter = super::source::conversation_source(parsed_file.source);
             // Apply source-owned storage policy at the last boundary before
             // Tantivy. Codex reference payloads must remain only in the source
@@ -244,14 +274,22 @@ impl CacheManager {
                 .collect();
             let entry_count = entries.len();
             let mut conversation_entry_counts = HashMap::new();
+            let mut primary_record_ids: HashMap<String, Vec<String>> = HashMap::new();
             for entry in &entries {
+                let key = entry
+                    .source
+                    .conversation_key(&entry.session_id);
                 *conversation_entry_counts
-                    .entry(
-                        entry
-                            .source
-                            .conversation_key(&entry.session_id),
-                    )
+                    .entry(key.clone())
                     .or_insert(0) += 1;
+                primary_record_ids
+                    .entry(key)
+                    .or_default()
+                    .push(
+                        entry
+                            .uuid
+                            .clone(),
+                    );
             }
             self.reconcile_moved_conversations(
                 indexer,
@@ -262,19 +300,27 @@ impl CacheManager {
             indexer.delete_artifact(parsed_file.source, &parsed_file.path)?;
 
             let mut conversation_counts = HashMap::new();
+            let mut message_ids: HashMap<String, Vec<String>> = HashMap::new();
             for entry in &entries {
                 if matches!(
                     entry.message_type,
                     MessageType::User | MessageType::Assistant
                 ) && !entry.is_tool_record()
                 {
+                    let key = entry
+                        .source
+                        .conversation_key(&entry.session_id);
                     *conversation_counts
-                        .entry(
-                            entry
-                                .source
-                                .conversation_key(&entry.session_id),
-                        )
+                        .entry(key.clone())
                         .or_insert(0) += 1;
+                    message_ids
+                        .entry(key)
+                        .or_default()
+                        .push(
+                            entry
+                                .uuid
+                                .clone(),
+                        );
                 }
             }
 
@@ -298,12 +344,22 @@ impl CacheManager {
                         parser_version: parser_version(parsed_file.source),
                         conversation_counts,
                         conversation_entry_counts,
+                        primary_record_ids,
+                        message_ids,
                     },
                 );
-            files_processed += 1;
+            outcome.indexed_artifacts += 1;
+            outcome.indexed_primary_records += entry_count;
+            if entry_count == 0 {
+                if reference_count == 0 {
+                    outcome.empty_artifacts += 1;
+                } else {
+                    outcome.reference_only_artifacts += 1;
+                }
+            }
         }
 
-        if files_processed > 0 {
+        if outcome.indexed_artifacts > 0 {
             indexer.commit()?;
         }
 
@@ -312,10 +368,10 @@ impl CacheManager {
             .last_full_scan = Some(Utc::now());
         self.save_metadata()?;
 
-        if files_processed > 0 {
+        if outcome.indexed_artifacts > 0 {
             info!(
                 "Incremental indexing complete: {} files processed, {} entries indexed",
-                files_processed,
+                outcome.indexed_artifacts,
                 self.metadata
                     .total_entries
             );
@@ -323,7 +379,7 @@ impl CacheManager {
             info!("No files needed indexing");
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
     fn reconcile_moved_conversations(
@@ -333,94 +389,78 @@ impl CacheManager {
         replacement_path: &Path,
         incoming: &HashMap<String, usize>,
     ) -> Result<()> {
-        let affected: Vec<_> = self
+        // A session can have several live artifacts (Claude subagents and
+        // resumed Codex rollouts). Only a missing source path can be replaced.
+        // Require all of its conversations in the replacement so a partial
+        // import cannot discard unrelated retained history.
+        let superseded: Vec<_> = self
             .metadata
             .indexed_files
             .iter()
             .filter(|(path, metadata)| {
                 *path != replacement_path
+                    && !path.exists()
                     && metadata.source == source
-                    && incoming
-                        .keys()
-                        .any(|conversation| {
-                            metadata
-                                .conversation_entry_counts
-                                .contains_key(conversation)
-                                || metadata
+                    && !incoming.is_empty()
+                    && {
+                        let previous: HashSet<_> = metadata
+                            .conversation_entry_counts
+                            .keys()
+                            .chain(
+                                metadata
                                     .conversation_counts
-                                    .contains_key(conversation)
-                        })
+                                    .keys(),
+                            )
+                            .collect();
+                        !previous.is_empty()
+                            && previous
+                                .iter()
+                                .all(|conversation| incoming.contains_key(*conversation))
+                    }
             })
             .map(|(path, _)| path.clone())
             .collect();
 
-        for conversation in incoming.keys() {
-            indexer.delete_conversation(
-                source,
-                conversation
-                    .split_once('\0')
-                    .map_or(conversation, |(_, id)| id),
-            )?;
-        }
-        for path in affected {
-            let mut remove_artifact = false;
-            if let Some(metadata) = self
-                .metadata
+        for path in superseded {
+            indexer.delete_artifact(source, &path)?;
+            self.metadata
                 .indexed_files
-                .get_mut(&path)
-            {
-                let legacy_counts_only = metadata
-                    .conversation_entry_counts
-                    .is_empty()
-                    && incoming
-                        .keys()
-                        .any(|conversation| {
-                            metadata
-                                .conversation_counts
-                                .contains_key(conversation)
-                        });
-                if legacy_counts_only {
-                    // Older metadata cannot tell how many non-display records
-                    // belong to each session. Removing this superseded artifact
-                    // avoids double-counted turns/entries after a move. Native
-                    // Claude Code and Codex artifacts contain one conversation,
-                    // so dropping the whole legacy artifact is safe for their
-                    // normal layout; a legacy multi-conversation artifact may
-                    // temporarily under-report unaffected sessions until it is
-                    // re-indexed.
-                    remove_artifact = true;
-                }
-                for conversation in incoming.keys() {
-                    if let Some(count) = metadata
-                        .conversation_entry_counts
-                        .remove(conversation)
-                    {
-                        metadata.entry_count = metadata
-                            .entry_count
-                            .saturating_sub(count);
-                        metadata
-                            .conversation_counts
-                            .remove(conversation);
-                    }
-                }
-                remove_artifact |= metadata.entry_count == 0;
-            }
-            if remove_artifact {
-                self.metadata
-                    .indexed_files
-                    .remove(&path);
-            }
+                .remove(&path);
         }
         Ok(())
     }
 
     fn refresh_derived_metadata(&mut self) {
-        self.metadata
-            .total_entries = self
+        let mut primary_ids: HashMap<String, HashSet<&str>> = HashMap::new();
+        let mut message_ids: HashMap<String, HashSet<&str>> = HashMap::new();
+        for file in self
             .metadata
             .indexed_files
             .values()
-            .map(|file| file.entry_count as u64)
+        {
+            for (conversation, ids) in &file.primary_record_ids {
+                primary_ids
+                    .entry(conversation.clone())
+                    .or_default()
+                    .extend(
+                        ids.iter()
+                            .map(String::as_str),
+                    );
+            }
+            for (conversation, ids) in &file.message_ids {
+                message_ids
+                    .entry(conversation.clone())
+                    .or_default()
+                    .extend(
+                        ids.iter()
+                            .map(String::as_str),
+                    );
+            }
+        }
+        self.metadata
+            .total_entries = primary_ids
+            .values()
+            .map(|ids| ids.len() as u64)
             .sum();
         self.metadata
             .session_counts
@@ -430,13 +470,32 @@ impl CacheManager {
             .indexed_files
             .values()
         {
-            for (conversation_key, count) in &file.conversation_counts {
-                *self
-                    .metadata
-                    .session_counts
-                    .entry(conversation_key.clone())
-                    .or_insert(0) += count;
+            if file
+                .primary_record_ids
+                .is_empty()
+            {
+                self.metadata
+                    .total_entries += file.entry_count as u64;
             }
+            for (conversation_key, count) in &file.conversation_counts {
+                if !file
+                    .message_ids
+                    .contains_key(conversation_key)
+                {
+                    *self
+                        .metadata
+                        .session_counts
+                        .entry(conversation_key.clone())
+                        .or_insert(0) += count;
+                }
+            }
+        }
+        for (conversation, ids) in message_ids {
+            *self
+                .metadata
+                .session_counts
+                .entry(conversation)
+                .or_insert(0) += ids.len();
         }
     }
 
@@ -633,7 +692,10 @@ impl CacheManager {
                 let current_size = fs::metadata(path)
                     .map(|m| m.len())
                     .unwrap_or(0);
-                if current_size != meta.size || current_mtime != meta.modified {
+                if current_size != meta.size
+                    || current_mtime != meta.modified
+                    || meta.parser_version != parser_version(meta.source)
+                {
                     stale += 1;
                 }
             }
@@ -667,7 +729,10 @@ impl CacheManager {
                 let current_size = fs::metadata(cached_path)
                     .map(|m| m.len())
                     .unwrap_or(0);
-                if current_size != cached_meta.size || current_mtime != cached_meta.modified {
+                if current_size != cached_meta.size
+                    || current_mtime != cached_meta.modified
+                    || cached_meta.parser_version != parser_version(cached_meta.source)
+                {
                     stale_files.push(cached_path.clone());
                 }
             }
@@ -756,10 +821,330 @@ impl std::fmt::Display for IndexHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::{ConversationEntry, MessageType, SearchEngine, SearchIndexer, Source};
+    use crate::shared::{
+        ConversationEntry, MessageType, SearchEngine, SearchIndexer, SearchQuery, Source,
+    };
     use chrono::Utc;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn write_web_artifact(path: &Path, messages: &[(&str, &str)]) {
+        let messages: Vec<_> = messages
+            .iter()
+            .map(|(id, text)| {
+                serde_json::json!({
+                    "uuid": id,
+                    "text": text,
+                    "sender": "human",
+                    "created_at": "2026-01-01T00:00:00Z"
+                })
+            })
+            .collect();
+        let document = serde_json::json!([{
+            "uuid": "shared-session",
+            "name": "Shared session",
+            "chat_messages": messages
+        }]);
+        std::fs::write(path, document.to_string()).unwrap();
+    }
+
+    #[test]
+    fn valid_empty_artifact_is_cached_and_second_pass_converges() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-empty.claude-web.json");
+        write_web_artifact(&artifact, &[]);
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+
+        let first = cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        assert_eq!(first.candidates, 1);
+        assert_eq!(first.empty_artifacts, 1);
+        assert_eq!(cache.quick_health_check(&[artifact.clone()]), (0, 0));
+        assert_eq!(
+            cache
+                .metadata
+                .indexed_files[&artifact]
+                .entry_count,
+            0
+        );
+
+        let second = cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        assert_eq!(second.candidates, 0);
+        assert_eq!(second.unchanged_artifacts, 1);
+    }
+
+    #[test]
+    fn coexisting_artifacts_keep_unique_and_overlapping_records() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let first = temporary
+            .path()
+            .join("conversation-first.claude-web.json");
+        let second = temporary
+            .path()
+            .join("conversation-second.claude-web.json");
+        write_web_artifact(
+            &first,
+            &[("overlap", "Shared text"), ("first", "First text")],
+        );
+        write_web_artifact(
+            &second,
+            &[("overlap", "Shared text"), ("second", "Second text")],
+        );
+        let files = vec![first.clone(), second.clone()];
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+
+        let initial = cache
+            .update_incremental(&mut indexer, files.clone())
+            .unwrap();
+        assert_eq!(initial.indexed_artifacts, 2);
+        assert_eq!(cache.quick_health_check(&files), (0, 0));
+        assert_eq!(
+            cache
+                .metadata
+                .indexed_files
+                .len(),
+            2
+        );
+        assert_eq!(
+            cache
+                .metadata
+                .total_entries,
+            3
+        );
+        assert_eq!(
+            cache.get_session_counts()[&Source::ClaudeWeb.conversation_key("shared-session")],
+            3
+        );
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        let messages = engine
+            .get_conversation_messages(Source::ClaudeWeb, "shared-session")
+            .unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.uuid == "first")
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.uuid == "second")
+        );
+        let matches = engine
+            .search(SearchQuery {
+                text: "text".to_string(),
+                limit: 3,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(matches.len(), 3);
+        assert_eq!(
+            engine
+                .aggregate_conversation_stats(None)
+                .unwrap()
+                .total_messages,
+            3
+        );
+
+        write_web_artifact(
+            &first,
+            &[("overlap", "Shared text"), ("first", "First updated")],
+        );
+        let changed = cache
+            .update_incremental_forced(&mut indexer, vec![first.clone()])
+            .unwrap();
+        assert_eq!(changed.indexed_artifacts, 1);
+        assert_eq!(
+            cache
+                .metadata
+                .indexed_files
+                .len(),
+            2
+        );
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        let messages = engine
+            .get_conversation_messages(Source::ClaudeWeb, "shared-session")
+            .unwrap();
+        assert_eq!(messages.len(), 3);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.uuid == "second")
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.content == "First updated")
+        );
+        assert_eq!(
+            cache
+                .update_incremental(&mut indexer, files.clone())
+                .unwrap()
+                .candidates,
+            0
+        );
+
+        let rebuilt_dir = temporary
+            .path()
+            .join("rebuilt");
+        let mut rebuilt_indexer = SearchIndexer::new(&rebuilt_dir).unwrap();
+        let mut rebuilt_cache = CacheManager::new(&rebuilt_dir).unwrap();
+        rebuilt_cache
+            .update_incremental(&mut rebuilt_indexer, files)
+            .unwrap();
+        let rebuilt = SearchEngine::new(
+            &rebuilt_dir,
+            rebuilt_cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        let mut incremental_records: Vec<_> = messages
+            .iter()
+            .map(|message| {
+                (
+                    message
+                        .uuid
+                        .as_str(),
+                    message
+                        .content
+                        .as_str(),
+                )
+            })
+            .collect();
+        let rebuilt_messages = rebuilt
+            .get_conversation_messages(Source::ClaudeWeb, "shared-session")
+            .unwrap();
+        let mut rebuilt_records: Vec<_> = rebuilt_messages
+            .iter()
+            .map(|message| {
+                (
+                    message
+                        .uuid
+                        .as_str(),
+                    message
+                        .content
+                        .as_str(),
+                )
+            })
+            .collect();
+        incremental_records.sort();
+        rebuilt_records.sort();
+        assert_eq!(incremental_records, rebuilt_records);
+    }
+
+    #[test]
+    fn parse_failures_remain_pending() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let artifact = temporary
+            .path()
+            .join("conversation-invalid.claude-web.json");
+        std::fs::write(&artifact, "invalid JSON").unwrap();
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        let outcome = cache
+            .update_incremental(&mut indexer, vec![artifact.clone()])
+            .unwrap();
+        assert_eq!(outcome.parse_failures, 1);
+        assert_eq!(outcome.indexed_artifacts, 0);
+        assert_eq!(cache.quick_health_check(&[artifact]), (0, 1));
+    }
+
+    #[test]
+    fn moving_one_fragment_preserves_a_coexisting_sibling() {
+        let temporary = TempDir::new().unwrap();
+        let cache_dir = temporary
+            .path()
+            .join("cache");
+        let original = temporary
+            .path()
+            .join("conversation-original.claude-web.json");
+        let sibling = temporary
+            .path()
+            .join("conversation-sibling.claude-web.json");
+        let moved = temporary
+            .path()
+            .join("conversation-moved.claude-web.json");
+        write_web_artifact(&original, &[("original", "Original record")]);
+        write_web_artifact(&sibling, &[("sibling", "Sibling record")]);
+        let mut indexer = SearchIndexer::new(&cache_dir).unwrap();
+        let mut cache = CacheManager::new(&cache_dir).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![original.clone(), sibling.clone()])
+            .unwrap();
+
+        std::fs::rename(&original, &moved).unwrap();
+        cache
+            .update_incremental(&mut indexer, vec![moved.clone(), sibling.clone()])
+            .unwrap();
+        assert!(
+            !cache
+                .metadata
+                .indexed_files
+                .contains_key(&original)
+        );
+        assert!(
+            cache
+                .metadata
+                .indexed_files
+                .contains_key(&moved)
+        );
+        assert!(
+            cache
+                .metadata
+                .indexed_files
+                .contains_key(&sibling)
+        );
+        let engine = SearchEngine::new(
+            &cache_dir,
+            cache
+                .get_session_counts()
+                .clone(),
+        )
+        .unwrap();
+        let messages = engine
+            .get_conversation_messages(Source::ClaudeWeb, "shared-session")
+            .unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.uuid == "original")
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.uuid == "sibling")
+        );
+    }
 
     #[test]
     fn automatic_indexing_retains_a_conversation_after_its_source_disappears() {
@@ -879,6 +1264,8 @@ mod tests {
                             source.conversation_key(&session_id),
                             1,
                         )]),
+                        primary_record_ids: HashMap::new(),
+                        message_ids: HashMap::new(),
                     },
                 );
         }

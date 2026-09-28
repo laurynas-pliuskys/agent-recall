@@ -88,7 +88,8 @@ impl ConversationSource for ClaudeSource {
     }
 
     fn parser_version(&self) -> u32 {
-        1
+        // Refresh metadata with per-record IDs for shared parent/subagent sessions.
+        2
     }
 
     fn discover(&self) -> Result<Vec<PathBuf>> {
@@ -111,9 +112,8 @@ impl ConversationSource for ClaudeWebSource {
     }
 
     fn parser_version(&self) -> u32 {
-        // v3 parses durable per-conversation imports and preserves rich export
-        // text/attachment labels instead of dropping empty `text` messages.
-        3
+        // v4 refreshes per-record metadata for overlap deduplication.
+        4
     }
 
     fn discover(&self) -> Result<Vec<PathBuf>> {
@@ -131,9 +131,9 @@ impl ConversationSource for CodexSource {
     }
 
     fn parser_version(&self) -> u32 {
-        // v3 keeps canonical tool records source-backed instead of indexing
-        // their payloads in the primary conversation-search index.
-        3
+        // v4 gives records without native IDs stable content-based identities
+        // across resumed rollout fragments.
+        4
     }
 
     fn discover(&self) -> Result<Vec<PathBuf>> {
