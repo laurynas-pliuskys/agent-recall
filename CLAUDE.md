@@ -104,6 +104,11 @@ bash hooks/install.sh
 
 ## Release Process
 
+Merging a PR into `main` does **not** publish a release. The Release workflow
+starts only when a `v*` tag is pushed. When a new release is requested after a
+merge, complete the version bump and CI steps below before tagging that `main`
+commit; then wait for the Linux binary asset before installing it.
+
 1. Update version in `Cargo.toml`
 2. Run `cargo update` (update all dependencies)
 3. Run `cargo clippy -- -D warnings` (CI uses `-D warnings`)
@@ -116,5 +121,13 @@ bash hooks/install.sh
 10. Push tag: `git push --tags`
 
 Release workflow (`.github/workflows/release.yml`) triggers on version tags and builds binaries.
+
+After the release asset is available, update the installed executable on both
+WSL and brix. Check each machine's PATH and MCP command before installing;
+keep one binary per machine and update any configuration that refers to an
+obsolete path. On WSL the canonical path is `~/.local/bin/agent-recall`; on
+brix it is `~/.cargo/bin/agent-recall`. Verify the installed checksum,
+`agent-recall --version`, and an incremental reindex on each machine. Do not
+assume a successful merge or release page means the executable was updated.
 
 **Cargo.lock Policy**: Excluded from .gitignore and committed only on releases for reproducible builds. `.gitattributes` configures `merge=union` to avoid spurious merge conflicts. Do not stage `Cargo.lock` outside of the release process.
