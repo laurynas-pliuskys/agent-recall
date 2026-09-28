@@ -7,11 +7,31 @@ use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tracing::{debug, error, info};
 
+use crate::shared::cache::IndexingOutcome;
 use crate::shared::path_utils::{discover_jsonl_files, globally_active_session_jsonl};
 use crate::shared::{
     CacheManager, DisplayOptions, SearchEngine, SearchQuery, SortOrder, auto_index, get_cache_dir,
     get_config, short_uuid,
 };
+
+fn format_reindex_result(
+    kind: &str,
+    outcome: &IndexingOutcome,
+    remaining: (usize, usize),
+) -> String {
+    format!(
+        "{kind}: {} of {} candidate artifacts processed ({} primary records, {} reference-only, {} valid empty); {} unchanged, {} parse failures; {} stale + {} new remain",
+        outcome.indexed_artifacts,
+        outcome.candidates,
+        outcome.indexed_primary_records,
+        outcome.reference_only_artifacts,
+        outcome.empty_artifacts,
+        outcome.unchanged_artifacts,
+        outcome.parse_failures,
+        remaining.0,
+        remaining.1,
+    )
+}
 
 const HAIKU_CONTEXT_WINDOW: usize = 200_000;
 const CONTEXT_SAFETY_MARGIN: f64 = 0.75;
@@ -1535,26 +1555,24 @@ Task(
             }
             let mut indexer = crate::shared::SearchIndexer::new(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            cache.update_incremental(&mut indexer, all_files)?;
+            let outcome = cache.update_incremental(&mut indexer, all_files.clone())?;
+            let remaining = cache.quick_health_check(&all_files);
             let counts = cache
                 .get_session_counts()
                 .clone();
             self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
-            "Full rebuild complete".to_string()
+            format_reindex_result("Full rebuild", &outcome, remaining)
         } else {
             // Incremental update
             let mut indexer = crate::shared::SearchIndexer::open(&self.cache_dir)?;
             let mut cache = crate::shared::CacheManager::new(&self.cache_dir)?;
-            let (stale, new) = cache.quick_health_check(&all_files);
-            cache.update_incremental(&mut indexer, all_files)?;
+            let outcome = cache.update_incremental(&mut indexer, all_files.clone())?;
+            let remaining = cache.quick_health_check(&all_files);
             let counts = cache
                 .get_session_counts()
                 .clone();
             self.search_engine = crate::shared::SearchEngine::new(&self.cache_dir, counts)?;
-            format!(
-                "Incremental update: {} stale + {} new files reindexed",
-                stale, new
-            )
+            format_reindex_result("Incremental update", &outcome, remaining)
         };
         Ok(serde_json::to_value(CallToolResponse {
             content: vec![ToolResult {
@@ -1697,6 +1715,23 @@ pub async fn run_mcp_server() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reindex_summary_reports_actual_outcomes_and_remaining_work() {
+        let outcome = IndexingOutcome {
+            candidates: 3,
+            indexed_artifacts: 2,
+            indexed_primary_records: 0,
+            reference_only_artifacts: 1,
+            empty_artifacts: 1,
+            parse_failures: 1,
+            unchanged_artifacts: 4,
+        };
+        let message = format_reindex_result("Incremental update", &outcome, (0, 1));
+        assert!(message.contains("2 of 3 candidate artifacts processed"));
+        assert!(message.contains("1 parse failures"));
+        assert!(message.contains("0 stale + 1 new remain"));
+    }
 
     #[test]
     fn test_jsonrpc_request_notification_detection() {

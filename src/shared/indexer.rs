@@ -163,18 +163,6 @@ impl SearchIndexer {
         Ok(Self { writer, fields })
     }
 
-    /// Delete one source-qualified conversation before re-indexing.
-    pub fn delete_conversation(&mut self, source: Source, session_id: &str) -> Result<()> {
-        let term = Term::from_field_text(
-            self.fields
-                .conversation_key_field,
-            &source.conversation_key(session_id),
-        );
-        self.writer
-            .delete_term(term);
-        Ok(())
-    }
-
     /// Delete every document originating from one source artifact.
     pub fn delete_artifact(&mut self, source: Source, artifact: &Path) -> Result<()> {
         let artifact = artifact.to_string_lossy();

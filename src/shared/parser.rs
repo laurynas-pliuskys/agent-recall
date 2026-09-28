@@ -437,6 +437,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parent_and_subagents_keep_distinct_records_with_shared_session_id() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary
+            .path()
+            .join("shared-session.jsonl");
+        let subagents = temporary
+            .path()
+            .join("subagents");
+        std::fs::create_dir(&subagents).unwrap();
+        let paths = [
+            (parent, "parent", "Parent text"),
+            (subagents.join("agent-one.jsonl"), "one", "First agent text"),
+            (
+                subagents.join("agent-two.jsonl"),
+                "two",
+                "Second agent text",
+            ),
+        ];
+        let parser = JsonlParser::default();
+        let mut entries = Vec::new();
+        for (path, id, content) in &paths {
+            let record = serde_json::json!({
+                "uuid": id,
+                "sessionId": "shared-session",
+                "type": "user",
+                "timestamp": "2026-09-28T10:00:00Z",
+                "message": {"role": "user", "content": content}
+            });
+            std::fs::write(path, format!("{record}\n")).unwrap();
+            entries.extend(
+                parser
+                    .parse_file(path)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.session_id == "shared-session")
+        );
+        assert_eq!(
+            entries[1]
+                .agent_id
+                .as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            entries[2]
+                .agent_id
+                .as_deref(),
+            Some("two")
+        );
+    }
+
+    #[test]
     fn test_parse_user_message() {
         let json = r#"{"uuid":"abc123","sessionId":"sess1","type":"user","timestamp":"2025-12-28T10:00:00Z","message":{"role":"user","content":"Hello world"}}"#;
         let raw: RawJsonlMessage = serde_json::from_str(json).unwrap();
